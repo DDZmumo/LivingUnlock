@@ -46,6 +46,8 @@ Source: "..\third_party\qrcodegen\LICENSE.txt"; DestDir: "{app}\licenses\qrcodeg
 Source: "..\third_party\qrcodegen\UPSTREAM.md"; DestDir: "{app}\licenses\qrcodegen"; Flags: ignoreversion
 Source: "..\tools\Remove-Enrollment.ps1"; DestDir: "{app}\tools"; Flags: ignoreversion
 Source: "..\tools\Manage-LivingUnlock.ps1"; DestDir: "{app}\tools"; Flags: ignoreversion
+Source: "..\tools\Repair-VaultAcl.ps1"; DestDir: "{app}\tools"; Flags: ignoreversion
+Source: "..\tools\VaultAclRepair.cs"; DestDir: "{app}\tools"; Flags: ignoreversion
 
 [Registry]
 Root: HKLM; Subkey: "SOFTWARE\Classes\CLSID\{{16B44968-DC91-4F41-BB1B-30D36B3F0BCE}"; ValueType: string; ValueName: ""; ValueData: "LivingUnlock"; Flags: uninsdeletekey

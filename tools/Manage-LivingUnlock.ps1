@@ -97,6 +97,14 @@ try {
         }
     }
 
+    function Resolve-RecordSource([string]$Local, [string]$Protected, [bool]$IsPhone, [string]$MissingMessage) {
+        # Prefer the per-user staging copy; fall back to an already-published record so
+        # promote-* also re-applies the strict ACL to vaults written before this fix.
+        if (Test-Record $Local $IsPhone) { return $Local }
+        if (Test-Record $Protected $IsPhone) { return $Protected }
+        throw $MissingMessage
+    }
+
     function Set-DisabledMarker([string]$Path) {
         if (-not (Test-Path -LiteralPath $protectedDir -PathType Container)) {
             throw 'Protected vault is missing.'
@@ -121,25 +129,25 @@ try {
             exit $code
         }
         'promote-pair' {
-            if (Test-Record $localCredential $false) { Publish-Record $localCredential $protectedCredential $false }
-            elseif (-not (Test-Record $protectedCredential $false)) { throw 'Phone credentials are missing.' }
-            if (Test-Record $localPhone $true) { Publish-Record $localPhone $protectedPhone $true }
-            elseif (-not (Test-Record $protectedPhone $true)) { throw 'Phone pairing is missing.' }
+            $credentialSource = Resolve-RecordSource $localCredential $protectedCredential $false 'Phone credentials are missing.'
+            Publish-Record $credentialSource $protectedCredential $false
+            $phoneSource = Resolve-RecordSource $localPhone $protectedPhone $true 'Phone pairing is missing.'
+            Publish-Record $phoneSource $protectedPhone $true
             Remove-Records @($phoneDisabled)
         }
         'promote-phone' {
-            if (Test-Record $localPhone $true) { Publish-Record $localPhone $protectedPhone $true }
-            elseif (-not (Test-Record $protectedPhone $true)) { throw 'Phone pairing is missing.' }
+            $phoneSource = Resolve-RecordSource $localPhone $protectedPhone $true 'Phone pairing is missing.'
+            Publish-Record $phoneSource $protectedPhone $true
             Remove-Records @($phoneDisabled)
         }
         'promote-auth' {
-            if (Test-Record $localAuth $false) { Publish-Record $localAuth $protectedAuth $false }
-            elseif (-not (Test-Record $protectedAuth $false)) { throw 'Authenticator enrollment is missing.' }
+            $authSource = Resolve-RecordSource $localAuth $protectedAuth $false 'Authenticator enrollment is missing.'
+            Publish-Record $authSource $protectedAuth $false
             Remove-Records @($authDisabled)
         }
         'promote-credentials' {
-            if (Test-Record $localCredential $false) { Publish-Record $localCredential $protectedCredential $false }
-            elseif (-not (Test-Record $protectedCredential $false)) { throw 'Phone credentials are missing.' }
+            $credentialSource = Resolve-RecordSource $localCredential $protectedCredential $false 'Phone credentials are missing.'
+            Publish-Record $credentialSource $protectedCredential $false
         }
         'disable-phone' {
             if (-not ((Test-Record $protectedPhone $true) -or (Test-Record $localPhone $true))) {

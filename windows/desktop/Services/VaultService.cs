@@ -178,25 +178,16 @@ public class VaultService
 
     public string GetWritableVaultDirectory()
     {
-        try
+        // The client stages records in the per-user vault only. Publishing into
+        // ProgramData is the job of the elevated Manage-LivingUnlock.ps1, which
+        // applies the SYSTEM/Administrators-only ACL the credential provider
+        // requires. Writing directly into ProgramData from here would create a
+        // record with an inherited, broadly readable ACL that the provider rejects.
+        if (!Directory.Exists(LocalAppVaultDir))
         {
-            if (!Directory.Exists(ProgramDataVaultDir))
-            {
-                Directory.CreateDirectory(ProgramDataVaultDir);
-            }
-            string testFile = Path.Combine(ProgramDataVaultDir, $".write_test_{Guid.NewGuid():N}");
-            File.WriteAllText(testFile, "test");
-            File.Delete(testFile);
-            return ProgramDataVaultDir;
+            Directory.CreateDirectory(LocalAppVaultDir);
         }
-        catch
-        {
-            if (!Directory.Exists(LocalAppVaultDir))
-            {
-                Directory.CreateDirectory(LocalAppVaultDir);
-            }
-            return LocalAppVaultDir;
-        }
+        return LocalAppVaultDir;
     }
 
     public bool IsAuthenticatorEnrolled()
@@ -555,17 +546,8 @@ public class VaultService
                     File.Delete(pendingPath);
                 }
 
-                // If saved to LocalAppData, also try copying to ProgramData if writable
-                if (!string.Equals(targetDir, ProgramDataVaultDir, StringComparison.OrdinalIgnoreCase))
-                {
-                    try
-                    {
-                        string progPath = Path.Combine(ProgramDataVaultDir, $"{CurrentUserSid}{extension}");
-                        File.Copy(targetPath, progPath, true);
-                    }
-                    catch { }
-                }
-
+                // ProgramData publishing is performed exclusively by the elevated
+                // Manage-LivingUnlock.ps1 (promote-*), which sets the strict ACL.
                 return (true, string.Empty);
             }
             catch (Exception ex)

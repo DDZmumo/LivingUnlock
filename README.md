@@ -132,6 +132,11 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\Install.ps1
 
 位置记录默认关闭。启用后，Windows 会请求位置权限并为当前用户创建登录启动项；每次登录只采集一次，失败时显示“未记录”，不会持续跟踪。
 
+如果旧安装在手机指纹通过后提示找不到已保存凭据，可在管理员 PowerShell 中运行安装目录
+`tools/Repair-VaultAcl.ps1` 修复系统保险库权限，再通过控制台重新保存凭据或配对。
+修复工具仅处理系统保险库内符合 SID 命名规则的记录，拒绝目录联接、符号链接和硬链接，不修改记录内容。
+客户端暂存成功不等于锁屏启用成功；必须完成管理员确认的发布步骤。
+
 ## 验证范围
 
 当前仓库包含协议编码、TOTP、限流、防重放、DPAPI 保险库、RFCOMM、P-256 签名和设备信息封装测试。历史实机验证覆盖过目标 Windows 11 设备上的 TOTP 登录、Android 蓝牙挑战、生物识别和原生 PIN 回退。

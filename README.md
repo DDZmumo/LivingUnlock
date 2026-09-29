@@ -146,7 +146,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\Install.ps1
 ## 项目状态
 
 - 支持平台：Windows 11 x64；Android 9（API 28）及以上。
-- 当前 Android 和 Windows 安装器版本：`0.2.1`。
+- 当前 Android 版本：`0.2.1`；Windows 安装器及 WinUI 客户端版本：`0.2.2`。
 - Android Compact 使用独立发行密钥签名；Windows 安装包尚无 Authenticode 签名。
 - 安装包通过 GitHub Releases 发布，不在源码仓库中提交 APK、EXE、DLL。
 - 当前仓库未声明开源许可证；第三方组件许可证见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

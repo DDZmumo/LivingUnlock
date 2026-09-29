@@ -108,7 +108,10 @@
                             </StackPanel>
                             <TextBlock Grid.Row="1" x:Name="AccountStateText" Text="录入当前账户密码后，即可选择下方任一绑定方式。"
                                        Style="{StaticResource CaptionStyle}" VerticalAlignment="Center" />
-                            <Button Grid.Row="2" Content="保存蓝牙解锁凭据" Style="{StaticResource PrimaryButtonStyle}" HorizontalAlignment="Stretch" Click="OnSaveCredentialsClicked" />
+                            <StackPanel Grid.Row="2" Spacing="8">
+                                <Button Content="保存蓝牙解锁凭据" Style="{StaticResource PrimaryButtonStyle}" HorizontalAlignment="Stretch" Click="OnSaveCredentialsClicked" />
+                                <Button x:Name="BtnDeleteCredentials" Content="删除凭证" Style="{StaticResource SecondaryButtonStyle}" HorizontalAlignment="Stretch" Click="OnDeleteCredentialsClicked" />
+                            </StackPanel>
                         </Grid>
                     </Border>
                 </Grid>

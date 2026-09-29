@@ -255,6 +255,18 @@ public sealed partial class HomePage : Page
             "这会移除当前账户的手机配对、动态码密钥和蓝牙登录凭据。原生 PIN 保留。");
     }
 
+    private async void OnDeleteCredentialsClicked(object sender, RoutedEventArgs e)
+    {
+        BtnDeleteCredentials.IsEnabled = false;
+        try
+        {
+            await RemoveMethodAsync("remove-both", "删除凭证及全部绑定？",
+                "这会清除当前 Windows 用户保存的账户凭据、电脑端手机配对记录和 Authenticator 密钥。恢复使用需要重新保存账户密码并绑定。手机和验证器里的旧条目需自行移除。原生 PIN 和 Windows 账户密码不会改变。",
+                deleteCredentials: true);
+        }
+        finally { BtnDeleteCredentials.IsEnabled = true; }
+    }
+
     private async void OnRefreshStateClicked(object sender, RoutedEventArgs e)
         => await RefreshStatusAsync();
 
@@ -281,13 +293,13 @@ public sealed partial class HomePage : Page
         catch (Exception ex) { ShowInfo("设置失败", ex.Message, InfoBarSeverity.Error); }
     }
 
-    private async System.Threading.Tasks.Task RemoveMethodAsync(string action, string title, string content)
+    private async System.Threading.Tasks.Task RemoveMethodAsync(string action, string title, string content, bool deleteCredentials = false)
     {
         var dialog = new ContentDialog
         {
             Title = title,
             Content = content,
-            PrimaryButtonText = "确认卸载",
+            PrimaryButtonText = deleteCredentials ? "删除凭证及绑定" : "确认卸载",
             CloseButtonText = "取消",
             DefaultButton = ContentDialogButton.Close,
             XamlRoot = XamlRoot
@@ -296,10 +308,21 @@ public sealed partial class HomePage : Page
         try
         {
             await UnlockConfigurationManager.RunAsync(action);
-            ShowInfo("已卸载", "所选解锁方式已从当前账户移除。", InfoBarSeverity.Success);
+            if (action == "remove-both")
+            {
+                MainWindow.Current.CurrentAccount = new AccountInfo();
+                TxtUsername.Text = string.Empty;
+                TxtPassword.Password = string.Empty;
+                TxtPassword.PasswordRevealMode = PasswordRevealMode.Hidden;
+                IconRevealPassword.Glyph = "\uE7B3";
+                TxtRevealPassword.Text = "显示密码";
+            }
+            ShowInfo(deleteCredentials ? "凭证已删除" : "已卸载",
+                deleteCredentials ? "当前账户的登录凭据及两种绑定已清除，需要重新保存密码和绑定才能恢复使用。" : "所选解锁方式已从当前账户移除。",
+                InfoBarSeverity.Success);
             await RefreshStatusAsync();
         }
-        catch (Exception ex) { ShowInfo("卸载失败", ex.Message, InfoBarSeverity.Error); }
+        catch (Exception ex) { ShowInfo(deleteCredentials ? "删除失败" : "卸载失败", ex.Message, InfoBarSeverity.Error); }
     }
 
     private void ShowInfo(string title, string message, InfoBarSeverity severity)

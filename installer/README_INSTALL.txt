@@ -1,4 +1,4 @@
-LivingUnlock 0.2.2（实验版）
+LivingUnlock 0.2.3（实验版）
 
 用途：在 Windows 11 x64 登录选项中增加 Authenticator 动态码与 Android 蓝牙生物识别入口，同时保留原生 Windows Hello PIN 和密码。
 安装包包含 WinUI 3 控制台、配对工具、登录组件以及自包含的桌面运行时。

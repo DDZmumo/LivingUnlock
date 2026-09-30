@@ -18,6 +18,7 @@ LivingUnlock 是一套实验性的 Windows 11 本地解锁方案，由 Windows C
 
 - `ICredentialProviderCredential2` 登录磁贴，支持登录和工作站解锁场景。
 - Microsoft 账户和本地账户凭据验证。
+- 自动识别当前 Windows 登录账户：本地账户填入用户名，Microsoft 账户填入关联邮箱；检测失败时保留已保存身份并允许手动选择。
 - TOTP 扫码或手动密钥绑定，带时间窗口、失败冷却和已用时间步防重放。
 - 蓝牙 RFCOMM 挑战/响应、生物识别签名验证、BLE 锁屏唤醒广播。
 - 每次挑战使用 30 秒绝对截止时间；重发会使旧请求失效。
@@ -146,7 +147,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\Install.ps1
 ## 项目状态
 
 - 支持平台：Windows 11 x64；Android 9（API 28）及以上。
-- 当前 Android 版本：`0.2.1`；Windows 安装器及 WinUI 客户端版本：`0.2.2`。
+- 当前 Android 版本：`0.2.1`；Windows 安装器及 WinUI 客户端版本：`0.2.3`。
 - Android Compact 使用独立发行密钥签名；Windows 安装包尚无 Authenticode 签名。
 - 安装包通过 GitHub Releases 发布，不在源码仓库中提交 APK、EXE、DLL。
 - 当前仓库未声明开源许可证；第三方组件许可证见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

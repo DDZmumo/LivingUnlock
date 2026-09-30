@@ -22,7 +22,7 @@ public sealed partial class MainWindow : Window
     public MainWindow()
     {
         Current = this;
-        CurrentAccount = Vault.GetSavedAccountIdentity() ?? new AccountInfo();
+        CurrentAccount = Vault.DetectCurrentAccountIdentity() ?? Vault.GetSavedAccountIdentity() ?? new AccountInfo();
         InitializeComponent();
         ExtendsContentIntoTitleBar = true;
         SetTitleBar(AppTitleBar);
@@ -105,8 +105,7 @@ public sealed partial class MainWindow : Window
     {
         if (string.IsNullOrWhiteSpace(CurrentAccount.Username))
         {
-            CurrentAccount.Username = Vault.CurrentUsername;
-            CurrentAccount.Type = AccountType.LocalUser;
+            CurrentAccount = Vault.DetectCurrentAccountIdentity() ?? Vault.GetSavedAccountIdentity() ?? new AccountInfo();
         }
     }
 

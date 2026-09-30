@@ -54,7 +54,8 @@ public sealed partial class HomePage : Page
         base.OnNavigatedTo(e);
         var vault = MainWindow.Current.Vault;
         TxtComputerName.Text = vault.ComputerName;
-        TxtCurrentUsername.Text = vault.CurrentUsername;
+        var detectedAccount = vault.DetectCurrentAccountIdentity();
+        TxtCurrentUsername.Text = detectedAccount?.Username ?? vault.CurrentUsername;
 
         var account = MainWindow.Current.CurrentAccount;
         if (account is not null && !string.IsNullOrWhiteSpace(account.Username))
@@ -71,9 +72,29 @@ public sealed partial class HomePage : Page
         }
         else
         {
-            RadioLocalUser.IsChecked = true;
-            TxtUsername.Text = vault.CurrentUsername;
+            account = detectedAccount ?? vault.GetSavedAccountIdentity() ?? new AccountInfo();
+            MainWindow.Current.CurrentAccount = account;
+            if (!string.IsNullOrWhiteSpace(account.Username))
+            {
+                if (account.Type == AccountType.MicrosoftAccount) RadioMicrosoftAccount.IsChecked = true;
+                else RadioLocalUser.IsChecked = true;
+            }
+            else
+            {
+                RadioLocalUser.IsChecked = false;
+                RadioMicrosoftAccount.IsChecked = false;
+                LblUsername.Text = "Windows 账户名称";
+                TxtUsername.PlaceholderText = "请选择账户类型后填写";
+            }
+            TxtUsername.Text = account.Username;
         }
+        DetectedAccountText.Text = detectedAccount is null
+            ? string.IsNullOrWhiteSpace(account.Username)
+                ? "未能确认当前账户类型，请手动选择本地用户或 Microsoft 账户。"
+                : "未能确认当前账户类型，已保留保存的账户信息，可手动调整。"
+            : detectedAccount.Type == AccountType.MicrosoftAccount
+                ? "当前登录为 Microsoft 账户，已获取关联邮箱。"
+                : "当前登录为本地账户，已获取用户名。";
         TxtPassword.PasswordRevealMode = PasswordRevealMode.Hidden;
         IconRevealPassword.Glyph = "\uE7B3";
         TxtRevealPassword.Text = "显示密码";
@@ -150,6 +171,11 @@ public sealed partial class HomePage : Page
 
     private bool ValidateAccount(AccountInfo account)
     {
+        if (RadioLocalUser.IsChecked != true && RadioMicrosoftAccount.IsChecked != true)
+        {
+            ShowInfo("需要账户类型", "请选择本地用户或 Microsoft 账户。", InfoBarSeverity.Warning);
+            return false;
+        }
         if (string.IsNullOrWhiteSpace(account.Username))
         {
             ShowInfo("需要账户名称", "请选择账户类型并输入本地用户名或 Microsoft 账户邮箱。", InfoBarSeverity.Warning);

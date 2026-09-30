@@ -60,6 +60,22 @@ public class VaultService
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool CloseHandle(IntPtr hObject);
 
+    [StructLayout(LayoutKind.Sequential)]
+    private struct USER_INFO_24
+    {
+        [MarshalAs(UnmanagedType.Bool)] public bool InternetIdentity;
+        public uint Flags;
+        public IntPtr InternetProviderName;
+        public IntPtr InternetPrincipalName;
+        public IntPtr UserSid;
+    }
+
+    [DllImport("netapi32.dll", CharSet = CharSet.Unicode)]
+    private static extern int NetUserGetInfo(string? serverName, string userName, uint level, out IntPtr buffer);
+
+    [DllImport("netapi32.dll")]
+    private static extern int NetApiBufferFree(IntPtr buffer);
+
     [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
     private static extern bool MoveFileEx(string lpExistingFileName, string lpNewFileName, uint dwFlags);
 
@@ -203,6 +219,44 @@ public class VaultService
     public AccountInfo? GetSavedAccountIdentity() => ReadSavedAccount(includePassword: false);
 
     public AccountInfo? GetSavedAccountForBinding() => ReadSavedAccount(includePassword: true);
+
+    public AccountInfo? DetectCurrentAccountIdentity()
+    {
+        IntPtr buffer = IntPtr.Zero;
+        try
+        {
+            if (NetUserGetInfo(null, CurrentUsername, 24, out buffer) == 0 && buffer != IntPtr.Zero)
+            {
+                var info = Marshal.PtrToStructure<USER_INFO_24>(buffer);
+                // The remaining fields are unspecified for an unlinked local account.
+                if (!info.InternetIdentity)
+                    return new AccountInfo { Type = AccountType.LocalUser, Username = CurrentUsername };
+                string provider = Marshal.PtrToStringUni(info.InternetProviderName) ?? string.Empty;
+                string principal = Marshal.PtrToStringUni(info.InternetPrincipalName) ?? string.Empty;
+                const string microsoftPrefix = "MicrosoftAccount\\";
+                if (principal.StartsWith(microsoftPrefix, StringComparison.OrdinalIgnoreCase))
+                    principal = principal[microsoftPrefix.Length..];
+                string linkedSid = info.UserSid != IntPtr.Zero
+                    ? new SecurityIdentifier(info.UserSid).Value
+                    : string.Empty;
+                if (provider.Equals("MicrosoftAccount", StringComparison.OrdinalIgnoreCase) &&
+                    linkedSid.Equals(CurrentUserSid, StringComparison.OrdinalIgnoreCase) &&
+                    !string.IsNullOrWhiteSpace(principal))
+                {
+                    return new AccountInfo
+                    {
+                        Type = AccountType.MicrosoftAccount,
+                        Username = principal.Trim()
+                    };
+                }
+            }
+        }
+        catch { /* Detection is advisory; the user can still choose manually. */ }
+        finally { if (buffer != IntPtr.Zero) NetApiBufferFree(buffer); }
+
+        // Failure or an unsupported/incomplete identity is not evidence of a local account.
+        return null;
+    }
 
     private AccountInfo? ReadSavedAccount(bool includePassword)
     {

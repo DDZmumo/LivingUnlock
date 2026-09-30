@@ -75,6 +75,7 @@
                             <RadioButton x:Name="RadioLocalUser" Content="本地用户" IsChecked="True" Checked="OnAccountTypeChanged" Foreground="{StaticResource TextBrush}" />
                             <RadioButton x:Name="RadioMicrosoftAccount" Content="Microsoft 账户" Checked="OnAccountTypeChanged" Foreground="{StaticResource TextBrush}" />
                         </StackPanel>
+                        <TextBlock x:Name="DetectedAccountText" Text="正在检测当前登录账户类型…" Style="{StaticResource CaptionStyle}" />
 
                         <Grid ColumnSpacing="12">
                             <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>

@@ -557,7 +557,6 @@ class Provider final : public ICredentialProvider, public ICredentialProviderSet
     void StopBackgroundListener() {
         if (bgRunning_.exchange(false)) {
             Log("Stopping background RFCOMM listener...");
-            bgBle_.Stop();
             AbortActiveClientSocket();
             bgServer_.Stop();
             autoUnlock_.cv.notify_all();
@@ -569,6 +568,8 @@ class Provider final : public ICredentialProvider, public ICredentialProviderSet
             if (bgThread_.joinable()) {
                 bgThread_.join();
             }
+            // Start/refresh runs on bgThread_; stop only after it can no longer publish.
+            bgBle_.Stop();
             Log("Background RFCOMM listener stopped.");
         }
     }
@@ -589,13 +590,44 @@ class Provider final : public ICredentialProvider, public ICredentialProviderSet
                 bgServer_.LocalBluetoothAddress().c_str());
             SetStatusForAll(L"手机呢...让我找找");
 
-            // Start BLE beacon so phone detects PC now that we are listening
-            if (!bgBle_.IsRunning()) {
-                bgBle_.Start("WSLP");
-            }
+            auto advertisedGeneration = retryGeneration_.load();
+            bool connectionAttempted = false;
 
             while (bgRunning_) {
-                const SOCKET client = bgServer_.Accept(1000);
+                const auto requestedGeneration = retryGeneration_.load();
+                if (requestedGeneration != advertisedGeneration) {
+                    bgBle_.Stop();
+                    connectionAttempted = false;
+                    advertisedGeneration = requestedGeneration;
+                }
+                SOCKET client = INVALID_SOCKET;
+                if (!connectionAttempted) {
+                    connectionAttempted = true;
+                    std::uint64_t phoneAddress = 0;
+                    {
+                        std::lock_guard<std::mutex> lock(pairedSidsMutex_);
+                        for (const auto& sid : pairedSids_) {
+                            const auto record = lockpin::phone::LoadPairedPhone(sid);
+                            if (record) { phoneAddress = record->phoneBluetoothAddress; break; }
+                        }
+                    }
+                    if (phoneAddress) {
+                        Log("Background: attempting one direct phone connection");
+                        client = lockpin::phone::ConnectPairedPhone(phoneAddress, 8000, [this, requestedGeneration] {
+                            return !bgRunning_ || requestedGeneration != retryGeneration_.load();
+                        });
+                        Log("Background: direct phone connection connected=%d", client != INVALID_SOCKET);
+                    }
+                    if (!bgRunning_ || requestedGeneration != retryGeneration_.load()) {
+                        if (client != INVALID_SOCKET) closesocket(client);
+                        continue;
+                    }
+                    if (client == INVALID_SOCKET) {
+                        const bool advertising = bgBle_.Start(bgServer_.LocalBluetoothAddress());
+                        Log("BLE manufacturer beacon fallback started=%d", advertising);
+                    }
+                }
+                if (client == INVALID_SOCKET) client = bgServer_.Accept(1000);
                 if (client == INVALID_SOCKET) {
                     continue;
                 }
@@ -650,7 +682,7 @@ class Provider final : public ICredentialProvider, public ICredentialProviderSet
                     continue;
                 }
 
-                const auto& phoneRecord = *phoneOpt;
+                auto& phoneRecord = *phoneOpt;
                 Log("Background: Paired phone loaded: %s (%s), PC ID: %s, for SID %ls",
                     phoneRecord.deviceName, phoneRecord.deviceId, phoneRecord.pcId, targetSid.c_str());
 
@@ -860,6 +892,17 @@ class Provider final : public ICredentialProvider, public ICredentialProviderSet
                 SecureZeroMemory(packed.rgbSerialization, packed.cbSerialization);
                 CoTaskMemFree(packed.rgbSerialization);
 
+                // Learn legacy routing only after signature, request generation and TTL checks.
+                // Bluetooth names/nearby-device discovery are never trusted as pairing identity.
+                const auto peerAddress = lockpin::phone::PeerBluetoothAddress(client);
+                if (peerAddress && peerAddress != phoneRecord.phoneBluetoothAddress) {
+                    phoneRecord.version = 2;
+                    phoneRecord.phoneBluetoothAddress = peerAddress;
+                    try {
+                        lockpin::phone::SavePairedPhone(phoneRecord);
+                        Log("Background: authenticated phone routing saved");
+                    } catch (...) { Log("Background: phone routing save failed; BLE fallback remains available"); }
+                }
                 sendUnlockResult(0, "Windows accepted the unlock request");
 
                 autoUnlock_.cv.notify_all();

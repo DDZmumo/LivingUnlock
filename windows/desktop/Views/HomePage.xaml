@@ -26,9 +26,9 @@
                     <Rectangle>
                         <Rectangle.Fill>
                             <LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
-                                <GradientStop Color="#E7082548" Offset="0" />
-                                <GradientStop Color="#C80A2B56" Offset="0.56" />
-                                <GradientStop Color="#9A102C54" Offset="1" />
+                                <GradientStop Color="#C4082548" Offset="0" />
+                                <GradientStop Color="#8A0A2B56" Offset="0.56" />
+                                <GradientStop Color="#38102C54" Offset="1" />
                             </LinearGradientBrush>
                         </Rectangle.Fill>
                     </Rectangle>

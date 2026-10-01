@@ -97,7 +97,14 @@ int wmain(int argc, wchar_t** argv) {
         if (client == INVALID_SOCKET) throw std::runtime_error("Pairing connection timed out");
         struct SocketCloser { SOCKET value; ~SocketCloser() { if (value != INVALID_SOCKET) closesocket(value); } } closer{client};
         std::vector<std::uint8_t> wire;
-        if (!lockpin::phone::ReceiveFrame(client, wire)) throw std::runtime_error("Unable to receive pairing frame");
+        if (!lockpin::phone::ReceiveFrame(client, wire)) {
+            // An old background listener can disconnect while the user unpairs
+            // on the phone. No pairing request was accepted or saved in this case.
+            SecureZeroMemory(token.data(), token.size());
+            SecureZeroMemory(uri.data(), uri.size());
+            std::cout << "PAIRING_CANCELLED=Connection ended before a pairing request was received" << std::endl;
+            return 0;
+        }
         const auto frame = lockpin::phone::DecodeFrame(wire.data(), wire.size());
         if (!frame.frame || frame.frame->type != lockpin::phone::MessageType::PairRequest)
             throw std::runtime_error("Unexpected pairing frame");
@@ -133,6 +140,7 @@ int wmain(int argc, wchar_t** argv) {
                     strncpy_s(record.deviceId, request->deviceId.c_str(), _TRUNCATE);
                     strncpy_s(record.deviceName, request->deviceName.c_str(), _TRUNCATE);
                     strncpy_s(record.bluetoothMac, bluetoothAddress.c_str(), _TRUNCATE);
+                    record.phoneBluetoothAddress = lockpin::phone::PeerBluetoothAddress(client);
                     if (request->clientPublicKey.size() == 65) {
                         memcpy(record.clientPublicKey, request->clientPublicKey.data(), 65);
                     }

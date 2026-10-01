@@ -31,6 +31,8 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- Held only while processing an incoming paired-PC request, never while idle. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <!-- Foreground service for maintaining connectedDevice Bluetooth listener -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />

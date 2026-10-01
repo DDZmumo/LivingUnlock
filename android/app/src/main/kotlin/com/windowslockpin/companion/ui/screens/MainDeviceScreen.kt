@@ -15,6 +15,7 @@ import androidx.compose.material.icons.filled.Computer
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.QrCodeScanner
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -39,7 +40,8 @@ fun MainDeviceScreen(
     onScanQrCode: () -> Unit,
     onUnpairDevice: (PairedPcRecord) -> Unit,
     onDeviceClick: (PairedPcRecord) -> Unit = {},
-    displayName: (PairedPcRecord) -> String = { it.pcName }
+    displayName: (PairedPcRecord) -> String = { it.pcName },
+    onOpenSettings: () -> Unit = {}
 ) {
     var deviceToUnpair by remember { mutableStateOf<PairedPcRecord?>(null) }
 
@@ -108,6 +110,9 @@ fun MainDeviceScreen(
                     )
                 }
 
+                IconButton(onClick = onOpenSettings) {
+                    Icon(Icons.Default.Settings, contentDescription = "设置", tint = CyanAccent)
+                }
                 // Background listening switch
                 Switch(
                     checked = isListeningEnabled,

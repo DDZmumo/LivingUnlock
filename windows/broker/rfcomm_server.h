@@ -4,9 +4,14 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include <functional>
 
 namespace lockpin::phone {
 inline constexpr GUID RfcommServiceId = {0x9b3f4a10, 0x7c22, 0x4e89, {0x80,0xb1,0x5d,0x9c,0x71,0xa3,0xd0,0xf2}};
+inline constexpr GUID PhoneListenerServiceId = {0x9b3f4a10, 0x7c22, 0x4e89, {0x80,0xb1,0x5d,0x9c,0x71,0xa3,0xd0,0xf3}};
+std::uint64_t PeerBluetoothAddress(SOCKET socket) noexcept;
+SOCKET ConnectPairedPhone(std::uint64_t address, std::uint32_t timeoutMs,
+    const std::function<bool()>& cancelled) noexcept;
 
 class RfcommServer {
 public:

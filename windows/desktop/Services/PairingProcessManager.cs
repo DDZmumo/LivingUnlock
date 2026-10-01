@@ -15,6 +15,7 @@ public class PairingProcessManager
     public event Action<string>? PairingUriReceived;
     public event Action<string>? PairingSucceeded;
     public event Action<string>? PairingFailed;
+    public event Action<string>? PairingCancelled;
     public event Action<string>? LogMessageReceived;
 
     public bool IsRunning => _process != null && !_process.HasExited;
@@ -78,6 +79,10 @@ public class PairingProcessManager
                 {
                     string uri = line.Substring("PAIRING_URI=".Length).Trim();
                     PairingUriReceived?.Invoke(uri);
+                }
+                else if (line.StartsWith("PAIRING_CANCELLED=", StringComparison.OrdinalIgnoreCase))
+                {
+                    PairingCancelled?.Invoke(line.Substring("PAIRING_CANCELLED=".Length).Trim());
                 }
                 else if (line.StartsWith("PAIRING_SUCCESS", StringComparison.OrdinalIgnoreCase))
                 {

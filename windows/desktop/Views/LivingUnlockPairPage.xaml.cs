@@ -14,6 +14,9 @@ public sealed partial class LivingUnlockPairPage : Page
     private readonly PairingProcessManager _pairingManager = new();
     private DispatcherTimer? _countdownTimer;
     private int _secondsLeft = 180;
+    private bool _isActive;
+    private bool _starting;
+    private bool _showAlreadyPairedDialog;
 
     public LivingUnlockPairPage()
     {
@@ -21,11 +24,13 @@ public sealed partial class LivingUnlockPairPage : Page
         _pairingManager.PairingUriReceived += OnPairingUriReceived;
         _pairingManager.PairingSucceeded += OnPairingSucceeded;
         _pairingManager.PairingFailed += OnPairingFailed;
+        _pairingManager.PairingCancelled += OnPairingCancelled;
     }
 
     protected override async void OnNavigatedTo(NavigationEventArgs e)
     {
         base.OnNavigatedTo(e);
+        _isActive = true;
         if (e.Parameter is AccountInfo account) _account = account;
         TxtTargetAccount.Text = _account.QualifiedUsername;
         await StartPairingSessionAsync();
@@ -33,15 +38,18 @@ public sealed partial class LivingUnlockPairPage : Page
 
     protected override void OnNavigatedFrom(NavigationEventArgs e)
     {
+        _isActive = false;
+        _showAlreadyPairedDialog = false;
         StopPairingSession();
         base.OnNavigatedFrom(e);
     }
 
-    private void OnPageLoaded(object sender, RoutedEventArgs e)
+    private async void OnPageLoaded(object sender, RoutedEventArgs e)
     {
         PageLayout.FitContent(PageScrollViewer, ContentHost, PageContent, 1080);
         Motion.Enter(PairingPanel, 0, 18);
         Motion.Enter(GuidePanel, 65, 18);
+        await ShowAlreadyPairedDialogAsync();
     }
 
     private void OnScrollViewportSizeChanged(object sender, SizeChangedEventArgs e)
@@ -49,8 +57,60 @@ public sealed partial class LivingUnlockPairPage : Page
 
     private async Task StartPairingSessionAsync()
     {
-        ResetUi();
-        await _pairingManager.StartPairingAsync();
+        if (_starting) return;
+        _starting = true;
+        try
+        {
+            StopPairingSession();
+            ResetUi();
+            TxtPulsingStatus.Text = "正在检查已有手机绑定…";
+            TxtCountdown.Text = string.Empty;
+            bool paired = MainWindow.Current.Vault.IsPhonePaired();
+            if (!paired)
+            {
+                // Installed system records may not be readable without elevation.
+                var state = await UnlockConfigurationManager.ReadStateAsync();
+                paired = state.PhoneConfigured;
+            }
+            if (!_isActive) return;
+            if (paired)
+            {
+                QrLoadingRing.IsActive = false;
+                PulseRing.IsActive = false;
+                PairingPanel.Visibility = Visibility.Collapsed;
+                AlreadyPairedPanel.Visibility = Visibility.Visible;
+                GuidePanel.Visibility = Visibility.Collapsed;
+                _showAlreadyPairedDialog = true;
+                await ShowAlreadyPairedDialogAsync();
+                return;
+            }
+            await _pairingManager.StartPairingAsync();
+        }
+        catch (Exception ex)
+        {
+            if (!_isActive) return;
+            QrLoadingRing.IsActive = false;
+            PulseRing.IsActive = false;
+            TxtPulsingStatus.Text = "未能确认当前绑定状态";
+            TxtCountdown.Text = string.Empty;
+            ShowInfo("无法检查绑定", ex.Message, InfoBarSeverity.Error);
+        }
+        finally { _starting = false; }
+    }
+
+    private async Task ShowAlreadyPairedDialogAsync()
+    {
+        if (!_showAlreadyPairedDialog || !_isActive || XamlRoot is null) return;
+        _showAlreadyPairedDialog = false;
+        var dialog = new ContentDialog
+        {
+            Title = "不可重复配对",
+            Content = "当前 Windows 账户已经绑定手机，请先回到主页解除蓝牙绑定，再配对新手机。",
+            CloseButtonText = "知道了",
+            DefaultButton = ContentDialogButton.Close,
+            XamlRoot = XamlRoot
+        };
+        await dialog.ShowAsync();
     }
 
     private void StopPairingSession()
@@ -62,6 +122,10 @@ public sealed partial class LivingUnlockPairPage : Page
 
     private void ResetUi()
     {
+        PairingPanel.Visibility = Visibility.Visible;
+        AlreadyPairedPanel.Visibility = Visibility.Collapsed;
+        GuidePanel.Visibility = Visibility.Visible;
+        QrLoadingRing.IsActive = true;
         QrLoadingRing.Visibility = Visibility.Visible;
         QrContainer.Visibility = Visibility.Collapsed;
         SuccessOverlay.Visibility = Visibility.Collapsed;
@@ -145,6 +209,24 @@ public sealed partial class LivingUnlockPairPage : Page
             PulseRing.IsActive = false;
             TxtPulsingStatus.Text = "配对失败";
             ShowInfo("无法完成配对", error, InfoBarSeverity.Error);
+        });
+    }
+
+    private void OnPairingCancelled(string reason)
+    {
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            if (!_isActive) return;
+            _countdownTimer?.Stop();
+            _secondsLeft = 0;
+            PulseRing.IsActive = false;
+            QrLoadingRing.IsActive = false;
+            QrLoadingRing.Visibility = Visibility.Collapsed;
+            QrContainer.Visibility = Visibility.Collapsed;
+            ImgQrCode.Source = null;
+            TxtPulsingStatus.Text = "手机连接已结束";
+            TxtCountdown.Text = "本次二维码已停止使用";
+            ShowInfo("配对会话已取消", "尚未收到配对请求，手机连接已断开。若正在解除绑定，可忽略此提示；需要重新配对时，请刷新二维码后扫码。", InfoBarSeverity.Informational);
         });
     }
 

@@ -17,6 +17,8 @@
 #include "ble_advertiser.h"
 #include <cstring>
 #include <memory>
+#include <array>
+#include <bcrypt.h>
 
 namespace lockpin::phone {
 
@@ -29,14 +31,9 @@ struct PublisherHolder {
     BluetoothLEAdvertisementPublisher publisher;
 };
 
-winrt::guid GuidToWinrt(const ::GUID& g) noexcept {
-    winrt::guid out{};
-    std::memcpy(&out, &g, sizeof(g));
-    return out;
-}
 } // namespace
 
-bool BleAdvertiser::Start(const std::string& pcId) noexcept {
+bool BleAdvertiser::Start(const std::string& bluetoothAddress) noexcept {
     try {
         Stop();
 
@@ -45,24 +42,47 @@ bool BleAdvertiser::Start(const std::string& pcId) noexcept {
         auto holder = std::make_unique<PublisherHolder>();
         auto& pub = holder->publisher;
 
-        // Service UUID filter — Android scans for this UUID
+        // Publisher reserves service-UUID AD types. Use a manufacturer payload:
+        // "LULK", version 1, classic Bluetooth MAC (6 bytes), beacon nonce (8 bytes).
         auto adv = pub.Advertisement();
-        adv.ServiceUuids().Append(GuidToWinrt(BleUnlockAdvertiseUuid));
-
-        // Manufacturer data: company 0xFFFF (test/reserved) + up to 8 bytes of pcId
+        if (bluetoothAddress.size() != 17) return false;
+        std::array<unsigned char, 6> address{};
+        const auto hex = [](char ch) -> int {
+            if (ch >= '0' && ch <= '9') return ch - '0';
+            if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
+            if (ch >= 'A' && ch <= 'F') return ch - 'A' + 10;
+            return -1;
+        };
+        for (std::size_t i = 0; i < address.size(); ++i) {
+            const int hi = hex(bluetoothAddress[i * 3]);
+            const int lo = hex(bluetoothAddress[i * 3 + 1]);
+            if (hi < 0 || lo < 0 || (i < 5 && bluetoothAddress[i * 3 + 2] != ':')) return false;
+            address[i] = static_cast<unsigned char>((hi << 4) | lo);
+        }
+        std::array<unsigned char, 8> nonce{};
+        if (BCryptGenRandom(nullptr, nonce.data(), static_cast<ULONG>(nonce.size()), BCRYPT_USE_SYSTEM_PREFERRED_RNG) < 0) return false;
         BluetoothLEManufacturerData mfr;
         mfr.CompanyId(0xFFFF);
         DataWriter writer;
-        const auto len = std::min<std::size_t>(pcId.size(), 8u);
-        for (std::size_t i = 0; i < len; ++i)
-            writer.WriteByte(static_cast<uint8_t>(pcId[i]));
+        for (const auto byte : std::array<unsigned char, 5>{'L','U','L','K',1}) writer.WriteByte(byte);
+        for (const auto byte : address) writer.WriteByte(byte);
+        for (const auto byte : nonce) writer.WriteByte(byte);
         mfr.Data(writer.DetachBuffer());
         adv.ManufacturerData().Append(mfr);
 
         pub.Start();
 
-        handle_ = holder.release();   // transfer ownership to raw pointer
-        return true;
+        for (int attempt = 0; attempt < 40; ++attempt) {
+            const auto status = pub.Status();
+            if (status == BluetoothLEAdvertisementPublisherStatus::Started) {
+                handle_ = holder.release();
+                return true;
+            }
+            if (status == BluetoothLEAdvertisementPublisherStatus::Aborted) break;
+            Sleep(50);
+        }
+        pub.Stop();
+        return false;
     } catch (...) {
         handle_ = nullptr;
         return false;

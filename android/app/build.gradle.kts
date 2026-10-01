@@ -7,12 +7,14 @@ plugins {
 }
 
 val releaseSigningFile = rootProject.file("release-signing.properties")
-val releaseSigning = Properties().apply {
-    if (releaseSigningFile.exists()) releaseSigningFile.inputStream().use { load(it) }
+val releaseSigningRequested = gradle.startParameter.taskNames.any {
+    it.contains("Compact", ignoreCase = true) || it.contains("Release", ignoreCase = true) ||
+        it.substringAfterLast(':').lowercase() in setOf("assemble", "build", "bundle", "publish")
 }
-if (!releaseSigningFile.exists() && gradle.startParameter.taskNames.any {
-    it.contains("Compact", ignoreCase = true) || it.contains("Release", ignoreCase = true)
-}) {
+val releaseSigning = Properties().apply {
+    if (releaseSigningRequested && releaseSigningFile.exists()) releaseSigningFile.inputStream().use { load(it) }
+}
+if (releaseSigningRequested && !releaseSigningFile.exists()) {
     error("Release signing configuration is missing: android/release-signing.properties")
 }
 
@@ -24,15 +26,15 @@ android {
         applicationId = "com.windowslockpin.companion"
         minSdk = 28
         targetSdk = 34
-        versionCode = 3
-        versionName = "0.2.1"
+        versionCode = 4
+        versionName = "0.2.4"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     signingConfigs {
         create("publishing") {
-            if (releaseSigningFile.exists()) {
+            if (releaseSigningRequested && releaseSigningFile.exists()) {
                 storeFile = rootProject.file(releaseSigning.getProperty("storeFile"))
                 storePassword = releaseSigning.getProperty("storePassword")
                 keyAlias = releaseSigning.getProperty("keyAlias")

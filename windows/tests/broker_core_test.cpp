@@ -320,6 +320,7 @@ void TestPhoneVault() {
     for (std::size_t i = 1; i < 65; ++i) record.clientPublicKey[i] = static_cast<std::uint8_t>(i);
     for (std::size_t i = 0; i < 32; ++i) record.kPair[i] = static_cast<std::uint8_t>(0xaa ^ i);
     record.pairedTimestampSec = 1790000000;
+    record.phoneBluetoothAddress = 0x102030405060ULL;
 
     SavePairedPhone(record, testDir);
     Require(IsPhonePaired(sid, testDir));
@@ -344,6 +345,22 @@ void TestPhoneVault() {
     Require(memcmp(loaded->clientPublicKey, record.clientPublicKey, 65) == 0);
     Require(memcmp(loaded->kPair, record.kPair, 32) == 0);
     Require(loaded->pairedTimestampSec == 1790000000);
+    Require(loaded->version == 2 && loaded->phoneBluetoothAddress == record.phoneBluetoothAddress);
+
+    // Old records retain their original byte layout and have no trusted phone route.
+    record.version = 1;
+    record.phoneBluetoothAddress = 0;
+    SavePairedPhone(record, testDir);
+    auto legacy = LoadPairedPhone(sid, testDir);
+    Require(legacy && legacy->version == 1 && legacy->phoneBluetoothAddress == 0);
+    Require(memcmp(legacy->clientPublicKey, record.clientPublicKey, 65) == 0);
+    Require(memcmp(legacy->kPair, record.kPair, 32) == 0);
+    legacy->version = 2;
+    legacy->phoneBluetoothAddress = 0x102030405060ULL;
+    SavePairedPhone(*legacy, testDir);
+    const auto migrated = LoadPairedPhone(sid, testDir);
+    Require(migrated && migrated->version == 2 && migrated->phoneBluetoothAddress == 0x102030405060ULL);
+    Require(memcmp(migrated->kPair, record.kPair, 32) == 0);
 
     Require(RemovePairedPhone(sid, testDir));
     Require(!IsPhonePaired(sid, testDir));
@@ -357,8 +374,15 @@ void TestRfcommServerLifecycle() {
     server.Stop();
 }
 
-int main() {
+int main(int argc, char** argv) {
     try {
+        if (argc == 2 && strcmp(argv[1], "--routing-only") == 0) {
+            TestPhoneVault();
+            Require(ConnectPairedPhone(0, 1000, [] { return false; }) == INVALID_SOCKET);
+            Require(ConnectPairedPhone(0x102030405060ULL, 1000, [] { return true; }) == INVALID_SOCKET);
+            std::cout << "Phone routing migration and cancellation tests passed\n";
+            return 0;
+        }
         TestFrames(); TestTranscript(); TestMessagePayloads(); TestPairingCrypto(); TestSignatureVerification();
         TestPhoneVault();
         TestSessions(); TestConcurrentBegin();

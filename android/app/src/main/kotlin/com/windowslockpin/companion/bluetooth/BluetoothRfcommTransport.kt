@@ -14,6 +14,9 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
@@ -79,6 +82,7 @@ class BluetoothRfcommClient(
 ) : TransportClient {
 
     @SuppressLint("MissingPermission")
+    @OptIn(ExperimentalCoroutinesApi::class)
     override suspend fun connect(macAddress: BluetoothMacAddress): TransportConnection = withContext(Dispatchers.IO) {
         val adapter = bluetoothAdapter
             ?: throw IOException("Bluetooth adapter is unavailable on this device")
@@ -96,17 +100,24 @@ class BluetoothRfcommClient(
         SafeLogger.i(TAG, "Initiating RFCOMM connection to target device with service UUID: ${ProtocolConstants.RFCOMM_SERVICE_UUID}")
 
         val socket = device.createRfcommSocketToServiceRecord(ProtocolConstants.RFCOMM_SERVICE_UUID)
-        try {
-            // Cancel discovery before connecting as recommended by Android documentation
-            adapter.cancelDiscovery()
-            socket.connect()
-            SafeLogger.i(TAG, "RFCOMM connection established successfully")
-            BluetoothRfcommConnection(socket)
-        } catch (e: IOException) {
-            try {
-                socket.close()
-            } catch (_: Exception) {}
-            throw IOException("Failed to connect RFCOMM socket to device: ${e.message}", e)
+        val connectContext = currentCoroutineContext()
+        suspendCancellableCoroutine { continuation ->
+            // Socket.connect() blocks; closing the socket makes the caller's timeout effective.
+            continuation.invokeOnCancellation { try { socket.close() } catch (_: Exception) {} }
+            CoroutineScope(connectContext).launch {
+                try {
+                    adapter.cancelDiscovery()
+                    socket.connect()
+                    SafeLogger.i(TAG, "RFCOMM connection established successfully")
+                    val connection = BluetoothRfcommConnection(socket)
+                    continuation.resume(connection) { try { connection.close() } catch (_: Exception) {} }
+                } catch (e: Exception) {
+                    try { socket.close() } catch (_: Exception) {}
+                    if (continuation.isActive) {
+                        continuation.resumeWith(Result.failure(IOException("Failed to connect RFCOMM socket to device: ${e.message}", e)))
+                    }
+                }
+            }
         }
     }
 

@@ -9,6 +9,7 @@
 #include <stdexcept>
 #include <vector>
 #include <cwchar>
+#include <cstddef>
 
 namespace lockpin::phone {
 namespace {
@@ -110,13 +111,18 @@ std::wstring DefaultPhoneVaultDirectory() {
 }
 
 void SavePairedPhone(const PairedDeviceRecord& record, const std::wstring& vaultDir) {
+    static_assert(offsetof(PairedDeviceRecord, phoneBluetoothAddress) == 696);
+    static_assert(sizeof(PairedDeviceRecord) == 704);
+    ThrowIfFalse(record.version == 1 || record.version == 2, "Unsupported phone record version");
+    ThrowIfFalse(record.phoneBluetoothAddress <= 0xFFFFFFFFFFFFULL &&
+        (record.version == 2 || record.phoneBluetoothAddress == 0), "Invalid phone route");
     const std::wstring sid(record.sid);
     ThrowIfFalse(ValidateSidString(sid), "Invalid SID for paired phone");
     const std::wstring dir = vaultDir.empty() ? DefaultPhoneVaultDirectory() : vaultDir;
     CreateDirectoryW(dir.c_str(), nullptr);
 
     DATA_BLOB input{};
-    input.cbData = sizeof(PairedDeviceRecord);
+    input.cbData = record.version == 1 ? 696 : sizeof(PairedDeviceRecord);
     input.pbData = reinterpret_cast<BYTE*>(const_cast<PairedDeviceRecord*>(&record));
 
     DATA_BLOB encrypted{};
@@ -216,11 +222,16 @@ std::optional<PairedDeviceRecord> LoadPairedPhone(const std::wstring& sid, const
         ~PlainCleanup() { if (blob.pbData) { SecureZeroMemory(blob.pbData, blob.cbData); LocalFree(blob.pbData); } }
     } plainCleanup{plainBlob};
 
-    if (plainBlob.cbData != sizeof(PairedDeviceRecord)) return std::nullopt;
+    if (plainBlob.cbData != 696 && plainBlob.cbData != sizeof(PairedDeviceRecord)) return std::nullopt;
 
     PairedDeviceRecord record;
-    memcpy(&record, plainBlob.pbData, sizeof(PairedDeviceRecord));
-    if (record.magic != 0x50484c50 || record.version != 1) {
+    memcpy(&record, plainBlob.pbData, plainBlob.cbData);
+    if (record.magic != 0x50484c50 ||
+        !((record.version == 1 && plainBlob.cbData == 696) ||
+          (record.version == 2 && plainBlob.cbData == sizeof(PairedDeviceRecord))) ||
+        record.phoneBluetoothAddress > 0xFFFFFFFFFFFFULL ||
+        record.sid[183] != 0 || sid != record.sid || record.pcId[64] != 0 ||
+        record.deviceId[64] != 0 || record.deviceName[64] != 0 || record.bluetoothMac[17] != 0) {
         SecureZeroMemory(&record, sizeof(record));
         return std::nullopt;
     }

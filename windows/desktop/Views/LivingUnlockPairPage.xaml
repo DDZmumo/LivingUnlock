@@ -64,6 +64,15 @@
                     </StackPanel>
                 </Border>
 
+                <Border x:Name="AlreadyPairedPanel" Grid.Column="0" Visibility="Collapsed" Style="{StaticResource PanelCardStyle}" MinHeight="570">
+                    <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="16">
+                        <FontIcon Glyph="&#xE73E;" FontFamily="Segoe MDL2 Assets" FontSize="42" Foreground="#68F5B2" />
+                        <TextBlock Text="手机已绑定" FontSize="22" FontWeight="SemiBold" HorizontalAlignment="Center" />
+                        <TextBlock Text="不可重复配对，请先解除绑定。" Style="{StaticResource CaptionStyle}" HorizontalAlignment="Center" />
+                        <Button Content="返回主页管理绑定" Style="{StaticResource SecondaryButtonStyle}" HorizontalAlignment="Center" Click="OnBackClicked" />
+                    </StackPanel>
+                </Border>
+
                 <StackPanel Grid.Column="1" Spacing="18">
                     <Border x:Name="GuidePanel" Style="{StaticResource PanelCardStyle}">
                         <StackPanel Spacing="18">

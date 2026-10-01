@@ -54,6 +54,7 @@ import com.windowslockpin.companion.service.UnlockUiEvent
 import com.windowslockpin.companion.storage.SharedPreferencesDeviceIdProvider
 import com.windowslockpin.companion.ui.screens.MainDeviceScreen
 import com.windowslockpin.companion.ui.screens.UnlockRequestScreen
+import com.windowslockpin.companion.ui.screens.SettingsScreen
 import com.windowslockpin.companion.ui.theme.LivingUnlockTheme
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -77,6 +78,7 @@ class MainActivity : AppCompatActivity() {
     private var eggPayload by mutableStateOf<String?>(null)
     private var selectedDevice by mutableStateOf<PairedPcRecord?>(null)
     private var deviceUiRevision by mutableStateOf(0)
+    private var showSettings by mutableStateOf(false)
     private val detailsStore by lazy { DeviceDetailsStore(this) }
 
     private val barcodeLauncher = registerForActivityResult(ScanContract()) { result ->
@@ -88,6 +90,7 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         eggPayload = savedInstanceState?.getString("scan_result")?.take(2401)
+        showSettings = savedInstanceState?.getBoolean("settings_open") ?: false
 
         WindowCompat.setDecorFitsSystemWindows(window, false)
         window.statusBarColor = android.graphics.Color.TRANSPARENT
@@ -162,8 +165,21 @@ class MainActivity : AppCompatActivity() {
                     onDispose { biometricAuthManager.cancelAuthentication() }
                 }
                 var isListening by remember { mutableStateOf(isListeningEnabled) }
+                var compatibilityScan by remember { mutableStateOf(BleUnlockScanManager.isCompatibilityScanEnabled(this)) }
+                DisposableEffect(prefs) {
+                    val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
+                        isListening = prefs.getBoolean(KEY_LISTENING_ENABLED, false)
+                        compatibilityScan = BleUnlockScanManager.isCompatibilityScanEnabled(this@MainActivity)
+                    }
+                    prefs.registerOnSharedPreferenceChangeListener(listener)
+                    onDispose { prefs.unregisterOnSharedPreferenceChangeListener(listener) }
+                }
                 val revision=deviceUiRevision
-                BackHandler(enabled=eggPayload!=null || selectedDevice!=null) { eggPayload=null;selectedDevice=null }
+                BackHandler(enabled=eggPayload!=null || selectedDevice!=null || showSettings) {
+                    if (selectedDevice != null) selectedDevice = null
+                    else if (eggPayload != null) eggPayload = null
+                    else showSettings = false
+                }
 
                 AnimatedContent(
                     targetState = activeSession,
@@ -188,9 +204,22 @@ class MainActivity : AppCompatActivity() {
                         )
                     } else if(eggPayload!=null) {
                         EggScreen(eggPayload!!){eggPayload=null}
+                    } else if (showSettings) {
+                        SettingsScreen(
+                            isListening = isListening,
+                            compatibilityScan = compatibilityScan,
+                            onBack = { showSettings = false },
+                            onToggleListening = { onListeningSwitchToggled(it) },
+                            onToggleCompatibility = { enabled ->
+                                prefs.edit().putBoolean(BleUnlockScanManager.KEY_COMPATIBILITY_SCAN, enabled).apply()
+                                compatibilityScan = enabled
+                                BleUnlockScanManager.startScan(this@MainActivity)
+                            }
+                        )
                     } else {
                         MainDeviceScreen(
                             pairedDevices = pairedDevicesState,
+                            onOpenSettings = { showSettings = true },
                             isListeningEnabled = isListening,
                             onToggleListening = { enabled ->
                                 if (onListeningSwitchToggled(enabled)) isListening = enabled
@@ -216,6 +245,7 @@ class MainActivity : AppCompatActivity() {
     override fun onSaveInstanceState(outState: Bundle) {
         // Save only the encrypted scan result, never the password or decrypted content.
         outState.putString("scan_result", eggPayload)
+        outState.putBoolean("settings_open", showSettings)
         super.onSaveInstanceState(outState)
     }
 

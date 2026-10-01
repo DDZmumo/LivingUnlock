@@ -104,8 +104,16 @@
 
             <Border Grid.Column="1" Background="#EB202930" BorderBrush="#34485D6C" BorderThickness="1" CornerRadius="12">
                 <Grid>
-                    <Image Source="Assets/bg_livingunlock.png" Stretch="UniformToFill" Opacity="0.075" />
-                    <Rectangle Fill="#C91D252C" />
+                    <Image Source="Assets/bg_livingunlock.png" Stretch="UniformToFill" Opacity="0.72" />
+                    <Rectangle>
+                        <Rectangle.Fill>
+                            <LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
+                                <GradientStop Color="#C71D252C" Offset="0" />
+                                <GradientStop Color="#901D252C" Offset="0.5" />
+                                <GradientStop Color="#581D252C" Offset="1" />
+                            </LinearGradientBrush>
+                        </Rectangle.Fill>
+                    </Rectangle>
                     <Frame x:Name="RootFrame" />
                 </Grid>
             </Border>

@@ -322,7 +322,8 @@ public class VaultService
             uint magic = reader.ReadUInt32();
             if (magic != 0x50484c50) return null; // 'PLHP'
             uint version = reader.ReadUInt32();
-            if (version != 1) return null;
+            if (version != 1 && version != 2) return null;
+            if (plainBytes.Length != (version == 1 ? 696 : 704)) return null;
 
             // sid[184] -> 368 bytes
             reader.ReadBytes(184 * 2);

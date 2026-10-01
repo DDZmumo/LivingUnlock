@@ -8,18 +8,28 @@ import android.app.PendingIntent
 import android.app.Service
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothManager
+import android.bluetooth.BluetoothServerSocket
+import android.bluetooth.BluetoothSocket
+import android.annotation.SuppressLint
 import android.content.Context
+import android.content.BroadcastReceiver
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.graphics.Color
 import android.media.AudioAttributes
 import android.media.RingtoneManager
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
+import androidx.core.content.ContextCompat
 import com.windowslockpin.companion.R
 import com.windowslockpin.companion.bluetooth.BluetoothRfcommClient
+import com.windowslockpin.companion.bluetooth.BluetoothRfcommConnection
+import com.windowslockpin.companion.core.transport.TransportConnection
+import com.windowslockpin.companion.bluetooth.BleUnlockScanManager
 import com.windowslockpin.companion.core.model.*
 import com.windowslockpin.companion.core.statemachine.CompanionStateMachine
 import com.windowslockpin.companion.core.statemachine.PairedPcRecord
@@ -32,6 +42,9 @@ import com.windowslockpin.companion.ui.MainActivity
 import kotlinx.coroutines.*
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import java.util.UUID
 import java.io.File
 import java.io.IOException
 
@@ -40,12 +53,36 @@ class BluetoothUnlockService : Service() {
     private val serviceJob = SupervisorJob()
     private val serviceScope = CoroutineScope(Dispatchers.IO + serviceJob)
 
-    private var isListening: Boolean = false
+    @Volatile private var isListening: Boolean = false
     private lateinit var pairedDeviceStore: PairedDeviceStore
     private lateinit var deviceIdProvider: SharedPreferencesDeviceIdProvider
     private lateinit var stateMachine: CompanionStateMachine
     private lateinit var coordinator: UnlockCoordinator
     private var bluetoothAdapter: BluetoothAdapter? = null
+    private var connectionJob: Job? = null
+    private val connectionLock = Any()
+    private val pendingAddresses = LinkedHashSet<String>()
+    private val sessionTransportMutex = Mutex()
+    private var passiveJob: Job? = null
+    @Volatile private var passiveServer: BluetoothServerSocket? = null
+    @Volatile private var passiveSocket: BluetoothSocket? = null
+    private val bluetoothStateReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            if (intent.action != BluetoothAdapter.ACTION_STATE_CHANGED || !isListening) return
+            when (intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)) {
+                BluetoothAdapter.STATE_OFF -> {
+                    BleUnlockScanManager.stopScan(context)
+                    synchronized(connectionLock) { pendingAddresses.clear() }
+                    connectionJob?.cancel()
+                    stopPassiveListener()
+                }
+                BluetoothAdapter.STATE_ON -> {
+                    BleUnlockScanManager.startScan(context)
+                    startPassiveListener()
+                }
+            }
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -73,6 +110,8 @@ class BluetoothUnlockService : Service() {
 
         val bm = getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
         bluetoothAdapter = bm?.adapter
+        ContextCompat.registerReceiver(this, bluetoothStateReceiver,
+            IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED), ContextCompat.RECEIVER_EXPORTED)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -104,8 +143,17 @@ class BluetoothUnlockService : Service() {
                 return START_STICKY
             }
             else -> {
+                if (!BleUnlockScanManager.isListeningEnabled(this)) {
+                    stopSelf()
+                    return START_NOT_STICKY
+                }
                 startForegroundServiceInternal()
-                startListeningLoop()
+                isListening = true
+                startPassiveListener()
+                BleUnlockScanManager.startScan(this)
+                if (action == ACTION_BLE_WAKE) {
+                    connectForBeacon(intent.getStringArrayListExtra(EXTRA_BLE_PC_ADDRESSES).orEmpty())
+                }
                 return START_STICKY
             }
         }
@@ -124,57 +172,120 @@ class BluetoothUnlockService : Service() {
         }
     }
 
-    private fun startListeningLoop() {
-        if (isListening) return
-        isListening = true
-
-        serviceScope.launch {
-            SafeLogger.i(TAG, "Starting persistent Bluetooth unlock listener loop")
-            while (isActive && isListening) {
-                val pairedPcs = pairedDeviceStore.getPairedPcs()
-                if (pairedPcs.isEmpty()) {
-                    SafeLogger.d(TAG, "No paired PCs available; idling...")
-                    delay(PAIRED_IDLE_DELAY_MS)
-                    continue
+    private fun connectForBeacon(addresses: List<String>): Unit = synchronized(connectionLock) {
+        if (!BleUnlockScanManager.isCompatibilityScanEnabled(this)) {
+            pendingAddresses.clear()
+            return@synchronized
+        }
+        if (!isListening || bluetoothAdapter?.isEnabled != true) return@synchronized
+        pendingAddresses.addAll(addresses)
+        if (connectionJob != null || pendingAddresses.isEmpty()) return@synchronized
+        val worker = serviceScope.launch(start = CoroutineStart.LAZY) {
+            // Drain actual beacon events only; there is no periodic reconnect loop.
+            while (isActive && isListening && BleUnlockScanManager.isCompatibilityScanEnabled(this@BluetoothUnlockService)) {
+                val batch = synchronized(connectionLock) {
+                    pendingAddresses.toSet().also { pendingAddresses.clear() }
                 }
-
-                val adapter = bluetoothAdapter
-                if (adapter == null || !adapter.isEnabled) {
-                    SafeLogger.w(TAG, "Bluetooth disabled; waiting to retry...")
-                    delay(BLUETOOTH_DISABLED_DELAY_MS)
-                    continue
+                if (batch.isEmpty()) break
+                val records = pairedDeviceStore.getPairedPcs().filter { record ->
+                    batch.any { it.equals(record.bluetoothMac.value, ignoreCase = true) }
                 }
-
-                // Establish a persistent connection for each paired PC and hold it.
-                // listenForPcChallenge now loops internally until the PC disconnects.
-                for (record in pairedPcs) {
-                    if (!isActive || !isListening) break
-                    listenForPcChallenge(record)
+                for (record in records) {
+                    if (!isActive || !isListening ||
+                        !BleUnlockScanManager.isCompatibilityScanEnabled(this@BluetoothUnlockService)) break
+                    SafeLogger.i(TAG, "BLE beacon triggered a bounded unlock connection")
+                    withTimeoutOrNull(CONNECTION_WINDOW_MS) {
+                        sessionTransportMutex.withLock { listenForPcChallenge(record) }
+                    }
                 }
+            }
+            SafeLogger.i(TAG, "Unlock connection finished; waiting for the next BLE beacon")
+        }
+        connectionJob = worker
+        worker.invokeOnCompletion {
+            synchronized(connectionLock) {
+                if (connectionJob === worker) connectionJob = null
+                if (pendingAddresses.isNotEmpty() && isListening) connectForBeacon(emptyList())
+            }
+        }
+        worker.start()
+        Unit
+    }
 
-                // Short reconnect guard: only reached when the PC closed the connection.
-                delay(SWEEP_RETRY_DELAY_MS)
+    @SuppressLint("MissingPermission", "WakelockTimeout")
+    private fun startPassiveListener() {
+        if (!isListening || bluetoothAdapter?.isEnabled != true || passiveJob?.isActive == true) return
+        passiveJob = serviceScope.launch {
+            var server: BluetoothServerSocket? = null
+            try {
+                server = bluetoothAdapter!!.listenUsingRfcommWithServiceRecord(
+                    "LivingUnlock Phone", PHONE_LISTENER_UUID)
+                passiveServer = server
+                ensureActive()
+                SafeLogger.i(TAG, "Passive phone listener ready")
+                while (isActive && isListening) {
+                    val socket = server.accept()
+                    passiveSocket = socket
+                    var accepted: BluetoothRfcommConnection? = null
+                    var wakeLock: PowerManager.WakeLock? = null
+                    try {
+                        ensureActive()
+                        val record = pairedDeviceStore.getPairedPcs().firstOrNull {
+                            it.bluetoothMac.value.equals(socket.remoteDevice.address, ignoreCase = true)
+                        }
+                        if (record == null) {
+                            SafeLogger.w(TAG, "Incoming connection has no paired PC; closing")
+                            continue
+                        }
+                        wakeLock = getSystemService(PowerManager::class.java)
+                            .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "LivingUnlock:incoming-request")
+                            .apply { acquire(CONNECTION_WINDOW_MS + 1000L) }
+                        accepted = BluetoothRfcommConnection(socket)
+                        SafeLogger.i(TAG, "Paired PC connected to passive listener")
+                        withTimeoutOrNull(CONNECTION_WINDOW_MS) {
+                            sessionTransportMutex.withLock { listenForPcChallenge(record, accepted) }
+                        }
+                    } finally {
+                        accepted?.close()
+                        runCatching { socket.close() }
+                        if (passiveSocket === socket) passiveSocket = null
+                        if (wakeLock?.isHeld == true) wakeLock.release()
+                    }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                SafeLogger.w(TAG, "Passive listener stopped: ${e.javaClass.simpleName}")
+            } finally {
+                runCatching { server?.close() }
+                if (passiveServer === server) passiveServer = null
             }
         }
     }
 
-    private suspend fun listenForPcChallenge(record: PairedPcRecord) {
+    private fun stopPassiveListener() {
+        passiveJob?.cancel()
+        runCatching { passiveSocket?.close() }
+        runCatching { passiveServer?.close() }
+    }
+
+    private suspend fun listenForPcChallenge(record: PairedPcRecord, incoming: TransportConnection? = null) {
         val client = BluetoothRfcommClient(bluetoothAdapter)
         var connection: com.windowslockpin.companion.core.transport.TransportConnection? = null
+        var ownedSession: ActiveUnlockSession? = null
+        var expiryJob: Job? = null
         try {
             SafeLogger.d(TAG, "Attempting connection to '${record.pcName}' (${record.bluetoothMac})...")
-            connection = withTimeout(CONNECT_TIMEOUT_MS) {
+            connection = incoming ?: withTimeout(CONNECT_TIMEOUT_MS) {
                 client.connect(record.bluetoothMac)
             }
-            SafeLogger.i(TAG, "Connected to '${record.pcName}'. Holding connection and awaiting challenges...")
+            SafeLogger.i(TAG, "Connected to '${record.pcName}'; awaiting one unlock request")
 
-            // ── Persistent keep-alive loop ────────────────────────────────────────
-            // Stay connected and handle any number of UNLOCK_CHALLENGE frames.
-            // Only exit when the socket closes (IOException) or the service stops.
+            // Read optional metadata, then handle one challenge within the connection window.
             while (currentCoroutineContext().isActive && isListening && connection.isConnected) {
 
                 // Blocking read — returns only when a frame arrives or the socket closes.
-                val frame = connection.receiveFrame()
+                val frame = withTimeout(FIRST_FRAME_TIMEOUT_MS) { connection.receiveFrame() }
 
                 when (frame.header.messageType) {
                     ProtocolConstants.MSG_PONG -> {
@@ -195,8 +306,7 @@ class BluetoothUnlockService : Service() {
                             SafeLogger.w(TAG, "Challenge rejected: ${transcriptResult.message}")
                             coordinator.cancel(connection, frame.header.requestId,
                                 CancelMessage.REASON_SYSTEM_CANCELLED, transcriptResult.message)
-                            // Stay connected — PC may send another challenge later.
-                            continue
+                            return
                         }
 
                         val transcript = (transcriptResult as ProtocolResult.Success).value
@@ -214,8 +324,9 @@ class BluetoothUnlockService : Service() {
                             SafeLogger.w(TAG, "Active session already in progress; rejecting")
                             coordinator.cancel(connection, frame.header.requestId,
                                 CancelMessage.REASON_SYSTEM_CANCELLED, "Concurrent request rejected")
-                            continue
+                            return
                         }
+                        ownedSession = session
 
                         // Only show heads-up floating notification banner when the user is outside the app.
                         // If the user is already inside the app, the in-app card & prompt handles it directly.
@@ -239,6 +350,7 @@ class BluetoothUnlockService : Service() {
                                 )
                             }
                         }
+                        expiryJob = timeoutJob
 
                         // Wait for user action or cancellation
                         while (currentCoroutineContext().isActive &&
@@ -253,11 +365,11 @@ class BluetoothUnlockService : Service() {
 
                         timeoutJob.cancel()
                         dismissHeadsUpNotification()
-                        // Loop back — stay connected for the next challenge
+                        return
                     }
 
                     ProtocolConstants.MSG_CANCEL -> {
-                        // PC explicitly asked us to stop; close and reconnect fresh.
+                        // PC cancelled this request. Return to BLE waiting without reconnecting.
                         SafeLogger.i(TAG, "Received Cancel from PC; closing connection")
                         dismissHeadsUpNotification()
                         UnlockSessionManager.cancelActiveSession(
@@ -270,7 +382,7 @@ class BluetoothUnlockService : Service() {
 
                     else -> {
                         SafeLogger.w(TAG, "Unexpected message type: 0x%02X".format(frame.header.messageType))
-                        // Ignore unknown frames; stay connected.
+                        return
                     }
                 }
             }
@@ -281,8 +393,21 @@ class BluetoothUnlockService : Service() {
         } catch (e: IOException) {
             SafeLogger.d(TAG, "RFCOMM connection closed or failed: ${e.message}")
             try { connection?.close() } catch (_: Exception) {}
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             SafeLogger.w(TAG, "Error in listenForPcChallenge: ${e.message}")
+            try { connection?.close() } catch (_: Exception) {}
+        } finally {
+            expiryJob?.cancel()
+            withContext(NonCancellable) {
+                ownedSession?.let { session ->
+                    if (UnlockSessionManager.activeSession.value === session) {
+                        UnlockSessionManager.clearSession(session)
+                        dismissHeadsUpNotification()
+                    }
+                }
+            }
             try { connection?.close() } catch (_: Exception) {}
         }
     }
@@ -451,6 +576,12 @@ class BluetoothUnlockService : Service() {
 
     suspend fun stopListeningAndCleanup() {
         isListening = false
+        stopPassiveListener()
+        passiveJob?.join()
+        synchronized(connectionLock) { pendingAddresses.clear() }
+        connectionJob?.cancelAndJoin()
+        connectionJob = null
+        BleUnlockScanManager.stopScan(this)
         dismissHeadsUpNotification()
         UnlockSessionManager.cancelActiveSession(
             reasonCode = CancelMessage.REASON_SYSTEM_CANCELLED,
@@ -461,6 +592,7 @@ class BluetoothUnlockService : Service() {
     override fun onDestroy() {
         SafeLogger.i(TAG, "BluetoothUnlockService onDestroy")
         isListening = false
+        runCatching { unregisterReceiver(bluetoothStateReceiver) }
         dismissHeadsUpNotification()
         runBlocking {
             try {
@@ -479,6 +611,7 @@ class BluetoothUnlockService : Service() {
 
     companion object {
         private const val TAG = "BluetoothUnlockService"
+        private val PHONE_LISTENER_UUID = UUID.fromString("9b3f4a10-7c22-4e89-80b1-5d9c71a3d0f3")
         const val CHANNEL_LISTENER_SERVICE = "wslp_listener_service_channel"
         const val CHANNEL_UNLOCK_HEADS_UP = "wslp_unlock_heads_up_v4"
 
@@ -486,6 +619,7 @@ class BluetoothUnlockService : Service() {
         const val NOTIFICATION_ID_CHALLENGE = 2001
 
         const val ACTION_START_LISTENING = "com.windowslockpin.companion.ACTION_START_LISTENING"
+        const val ACTION_BLE_WAKE = "com.windowslockpin.companion.ACTION_BLE_WAKE"
         const val ACTION_STOP_LISTENING = "com.windowslockpin.companion.ACTION_STOP_LISTENING"
         const val ACTION_CANCEL_REQUEST = "com.windowslockpin.companion.ACTION_CANCEL_REQUEST"
         const val ACTION_CONFIRM_UNLOCK = "com.windowslockpin.companion.ACTION_CONFIRM_UNLOCK"
@@ -493,14 +627,14 @@ class BluetoothUnlockService : Service() {
         const val ACTION_OPEN_APP = "com.windowslockpin.companion.ACTION_OPEN_APP"
 
         const val EXTRA_REQUEST_ID = "extra_request_id"
+        const val EXTRA_BLE_PC_ADDRESSES = "extra_ble_pc_addresses"
 
         private const val REQUEST_CODE_UNLOCK = 101
         private const val REQUEST_CODE_CANCEL = 102
         private const val REQUEST_CODE_CONTENT = 103
 
         private const val CONNECT_TIMEOUT_MS = 8_000L         // connect attempt timeout
-        private const val SWEEP_RETRY_DELAY_MS = 2_000L       // delay after disconnect before reconnect
-        private const val PAIRED_IDLE_DELAY_MS = 15_000L
-        private const val BLUETOOTH_DISABLED_DELAY_MS = 10_000L
+        private const val FIRST_FRAME_TIMEOUT_MS = 5_000L
+        private const val CONNECTION_WINDOW_MS = 45_000L // connect + challenge TTL + result confirmation
     }
 }

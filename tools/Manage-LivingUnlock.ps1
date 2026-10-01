@@ -47,11 +47,14 @@ try {
             $plain = [System.Security.Cryptography.ProtectedData]::Unprotect(
                 $cipher, $null, [System.Security.Cryptography.DataProtectionScope]::LocalMachine)
             if ($IsPhone) {
-                if ($plain.Length -ne 696 -or [BitConverter]::ToUInt32($plain, 0) -ne 0x50484c50) { return $false }
+                if ($plain.Length -lt 8 -or [BitConverter]::ToUInt32($plain, 0) -ne 0x50484c50) { return $false }
+                $phoneVersion = [BitConverter]::ToUInt32($plain, 4)
+                if (-not (($phoneVersion -eq 1 -and $plain.Length -eq 696) -or
+                          ($phoneVersion -eq 2 -and $plain.Length -eq 704))) { return $false }
             } else {
                 if ($plain.Length -ne 3504 -or [BitConverter]::ToUInt32($plain, 0) -ne 0x314b504c) { return $false }
             }
-            if ([BitConverter]::ToUInt32($plain, 4) -ne 1) { return $false }
+            if (-not $IsPhone -and [BitConverter]::ToUInt32($plain, 4) -ne 1) { return $false }
             $sidInRecord = ([Text.Encoding]::Unicode.GetString($plain, 8, 368) -split [char]0, 2)[0]
             return $sidInRecord -ceq $UserSid
         } catch { return $false }

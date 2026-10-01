@@ -19,6 +19,54 @@ bool ReceiveExact(SOCKET socket, std::uint8_t* output, std::size_t size) noexcep
 }
 }
 RfcommServer::~RfcommServer() { Stop(); }
+std::uint64_t PeerBluetoothAddress(SOCKET socket) noexcept {
+    SOCKADDR_BTH peer{};
+    int length = sizeof(peer);
+    if (getpeername(socket, reinterpret_cast<sockaddr*>(&peer), &length) != 0 ||
+        peer.addressFamily != AF_BTH) return 0;
+    return peer.btAddr;
+}
+
+SOCKET ConnectPairedPhone(std::uint64_t address, std::uint32_t timeoutMs,
+    const std::function<bool()>& cancelled) noexcept {
+    if (!address || address > 0xFFFFFFFFFFFFULL || cancelled()) return INVALID_SOCKET;
+    const SOCKET client = socket(AF_BTH, SOCK_STREAM, BTHPROTO_RFCOMM);
+    if (client == INVALID_SOCKET) return INVALID_SOCKET;
+    const auto fail = [&] { closesocket(client); return INVALID_SOCKET; };
+    SOCKADDR_BTH target{};
+    target.addressFamily = AF_BTH;
+    target.btAddr = address;
+    target.serviceClassId = PhoneListenerServiceId;
+    u_long nonblocking = 1;
+    if (ioctlsocket(client, FIONBIO, &nonblocking) != 0) return fail();
+    const auto deadline = GetTickCount64() + timeoutMs;
+    if (connect(client, reinterpret_cast<sockaddr*>(&target), sizeof(target)) == SOCKET_ERROR) {
+        if (WSAGetLastError() != WSAEWOULDBLOCK) return fail();
+        bool connected = false;
+        while (!cancelled() && GetTickCount64() < deadline) {
+            fd_set writeSet, errorSet;
+            FD_ZERO(&writeSet); FD_ZERO(&errorSet);
+            FD_SET(client, &writeSet); FD_SET(client, &errorSet);
+            timeval wait{0, 100000};
+            const int ready = select(0, nullptr, &writeSet, &errorSet, &wait);
+            if (ready == SOCKET_ERROR || FD_ISSET(client, &errorSet)) return fail();
+            if (ready > 0 && FD_ISSET(client, &writeSet)) {
+                int error = 0, length = sizeof(error);
+                if (getsockopt(client, SOL_SOCKET, SO_ERROR, reinterpret_cast<char*>(&error), &length) != 0 || error) return fail();
+                connected = true;
+                break;
+            }
+        }
+        if (!connected) return fail();
+    }
+    if (cancelled()) return fail();
+    nonblocking = 0;
+    if (ioctlsocket(client, FIONBIO, &nonblocking) != 0) return fail();
+    const DWORD ioTimeout = 20000;
+    setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&ioTimeout), sizeof(ioTimeout));
+    setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&ioTimeout), sizeof(ioTimeout));
+    return client;
+}
 bool RfcommServer::Start(const std::wstring& serviceName) noexcept {
     Stop();
     WSADATA data{};

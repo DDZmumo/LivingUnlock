@@ -7,12 +7,14 @@ extern "C" HRESULT __stdcall DllGetClassObject(REFCLSID, REFIID, void**);
 extern "C" HRESULT __stdcall DllCanUnloadNow();
 ICredentialProviderCredential2* MakeTestCredential();
 bool TestProviderRetryBeforeWait();
+bool TestProviderRetryWaitGeneration();
 ICredentialProviderCredential2* MakeTestCredentialWithModes(bool, bool);
 void Require(bool ok) { if (!ok) throw std::runtime_error("Provider test failed"); }
 int main() {
     try {
         Require(SUCCEEDED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED)));
         Require(TestProviderRetryBeforeWait());
+        Require(TestProviderRetryWaitGeneration());
         // Load the actual deliverable, without registering it or starting LogonUI.
         auto dll = LoadLibraryW(L"build\\WindowsLockPin.dll");
         Require(dll != nullptr);

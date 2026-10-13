@@ -28,40 +28,47 @@ std::uint64_t PeerBluetoothAddress(SOCKET socket) noexcept {
 }
 
 SOCKET ConnectPairedPhone(std::uint64_t address, std::uint32_t timeoutMs,
-    const std::function<bool()>& cancelled) noexcept {
+    const std::function<bool()>& cancelled, HANDLE cancelEvent) noexcept {
     if (!address || address > 0xFFFFFFFFFFFFULL || cancelled()) return INVALID_SOCKET;
     const SOCKET client = socket(AF_BTH, SOCK_STREAM, BTHPROTO_RFCOMM);
     if (client == INVALID_SOCKET) return INVALID_SOCKET;
-    const auto fail = [&] { closesocket(client); return INVALID_SOCKET; };
+    const WSAEVENT connectedEvent = WSACreateEvent();
+    if (connectedEvent == WSA_INVALID_EVENT) { closesocket(client); return INVALID_SOCKET; }
+    const auto fail = [&] { closesocket(client); WSACloseEvent(connectedEvent); return INVALID_SOCKET; };
     SOCKADDR_BTH target{};
     target.addressFamily = AF_BTH;
     target.btAddr = address;
     target.serviceClassId = PhoneListenerServiceId;
-    u_long nonblocking = 1;
-    if (ioctlsocket(client, FIONBIO, &nonblocking) != 0) return fail();
+    if (WSAEventSelect(client, connectedEvent, FD_CONNECT) == SOCKET_ERROR) return fail();
     const auto deadline = GetTickCount64() + timeoutMs;
     if (connect(client, reinterpret_cast<sockaddr*>(&target), sizeof(target)) == SOCKET_ERROR) {
         if (WSAGetLastError() != WSAEWOULDBLOCK) return fail();
         bool connected = false;
         while (!cancelled() && GetTickCount64() < deadline) {
-            fd_set writeSet, errorSet;
-            FD_ZERO(&writeSet); FD_ZERO(&errorSet);
-            FD_SET(client, &writeSet); FD_SET(client, &errorSet);
-            timeval wait{0, 100000};
-            const int ready = select(0, nullptr, &writeSet, &errorSet, &wait);
-            if (ready == SOCKET_ERROR || FD_ISSET(client, &errorSet)) return fail();
-            if (ready > 0 && FD_ISSET(client, &writeSet)) {
-                int error = 0, length = sizeof(error);
-                if (getsockopt(client, SOL_SOCKET, SO_ERROR, reinterpret_cast<char*>(&error), &length) != 0 || error) return fail();
+            const auto now = GetTickCount64();
+            if (now >= deadline) break;
+            HANDLE handles[] = {connectedEvent, cancelEvent};
+            const DWORD remaining = static_cast<DWORD>(deadline - now);
+            // Provider supplies an event, so connection completion/stop/resend
+            // wake us without a polling timer. Legacy callers retain cancellation.
+            const DWORD wait = cancelEvent ? remaining : (std::min)(remaining, DWORD{100});
+            const auto ready = WaitForMultipleObjects(cancelEvent ? 2 : 1, handles, FALSE, wait);
+            if (ready == WAIT_FAILED || cancelled()) return fail();
+            if (ready == WAIT_OBJECT_0) {
+                WSANETWORKEVENTS events{};
+                if (WSAEnumNetworkEvents(client, connectedEvent, &events) == SOCKET_ERROR ||
+                    !(events.lNetworkEvents & FD_CONNECT) || events.iErrorCode[FD_CONNECT_BIT]) return fail();
                 connected = true;
                 break;
             }
         }
         if (!connected) return fail();
     }
-    if (cancelled()) return fail();
-    nonblocking = 0;
+    if (cancelled() || GetTickCount64() >= deadline) return fail();
+    if (WSAEventSelect(client, nullptr, 0) == SOCKET_ERROR) return fail();
+    u_long nonblocking = 0;
     if (ioctlsocket(client, FIONBIO, &nonblocking) != 0) return fail();
+    WSACloseEvent(connectedEvent);
     const DWORD ioTimeout = 20000;
     setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&ioTimeout), sizeof(ioTimeout));
     setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&ioTimeout), sizeof(ioTimeout));
@@ -80,6 +87,9 @@ bool RfcommServer::Start(const std::wstring& serviceName) noexcept {
     int length = sizeof(local_);
     if (getsockname(socket_, reinterpret_cast<sockaddr*>(&local_), &length) == SOCKET_ERROR) { Stop(); return false; }
     if (listen(socket_, 1) == SOCKET_ERROR) { Stop(); return false; }
+    acceptEvent_ = WSACreateEvent();
+    if (acceptEvent_ == WSA_INVALID_EVENT ||
+        WSAEventSelect(socket_, acceptEvent_, FD_ACCEPT) == SOCKET_ERROR) { Stop(); return false; }
     serviceName_ = serviceName;
     addressInfo_.LocalAddr.iSockaddrLength = sizeof(local_);
     addressInfo_.LocalAddr.lpSockaddr = reinterpret_cast<sockaddr*>(&local_);
@@ -100,11 +110,19 @@ bool RfcommServer::Start(const std::wstring& serviceName) noexcept {
 }
 SOCKET RfcommServer::Accept(std::uint32_t timeoutMs) noexcept {
     if (socket_ == INVALID_SOCKET) return INVALID_SOCKET;
-    fd_set readSet; FD_ZERO(&readSet); FD_SET(socket_, &readSet);
-    timeval timeout{static_cast<long>(timeoutMs / 1000), static_cast<long>((timeoutMs % 1000) * 1000)};
-    if (select(0, &readSet, nullptr, nullptr, &timeout) <= 0) return INVALID_SOCKET;
+    if (WaitForSingleObject(acceptEvent_, timeoutMs) != WAIT_OBJECT_0) return INVALID_SOCKET;
+    WSANETWORKEVENTS events{};
+    if (WSAEnumNetworkEvents(socket_, acceptEvent_, &events) == SOCKET_ERROR ||
+        !(events.lNetworkEvents & FD_ACCEPT) || events.iErrorCode[FD_ACCEPT_BIT]) return INVALID_SOCKET;
     SOCKET client = accept(socket_, nullptr, nullptr);
     if (client != INVALID_SOCKET) {
+        // Accepted sockets inherit the listener's event/nonblocking settings.
+        u_long nonblocking = 0;
+        if (WSAEventSelect(client, nullptr, 0) == SOCKET_ERROR ||
+            ioctlsocket(client, FIONBIO, &nonblocking) == SOCKET_ERROR) {
+            closesocket(client);
+            return INVALID_SOCKET;
+        }
         const DWORD ioTimeout = 20000;
         setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&ioTimeout), sizeof(ioTimeout));
         setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&ioTimeout), sizeof(ioTimeout));
@@ -128,11 +146,15 @@ std::string RfcommServer::LocalBluetoothAddress() const {
     }
     return output.str();
 }
-void RfcommServer::Stop() noexcept {
+void RfcommServer::StopListening() noexcept {
     if (advertised_) { WSASetServiceW(&query_, RNRSERVICE_DELETE, 0); advertised_ = false; }
     if (socket_ != INVALID_SOCKET) { closesocket(socket_); socket_ = INVALID_SOCKET; }
-    if (winsockStarted_) { WSACleanup(); winsockStarted_ = false; }
+    if (acceptEvent_ != WSA_INVALID_EVENT) { WSACloseEvent(acceptEvent_); acceptEvent_ = WSA_INVALID_EVENT; }
     local_ = {}; addressInfo_ = {}; query_ = {}; serviceName_.clear();
+}
+void RfcommServer::Stop() noexcept {
+    StopListening();
+    if (winsockStarted_) { WSACleanup(); winsockStarted_ = false; }
 }
 bool ReceiveFrame(SOCKET socket, std::vector<std::uint8_t>& frame) noexcept {
     frame.assign(FrameHeaderSize, 0);

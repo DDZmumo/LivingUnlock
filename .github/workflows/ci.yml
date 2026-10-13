@@ -1,0 +1,111 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    name: Windows build and tests
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Set up .NET 8
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Build Credential Provider and setup tool
+        shell: cmd
+        run: call tools\build.cmd
+
+      - name: Run native unit and vault tests
+        shell: cmd
+        run: call tools\test.cmd
+
+      - name: Run phone protocol tests without a physical adapter
+        shell: cmd
+        run: call tools\test-phone-windows.cmd --no-bluetooth
+
+      - name: Run device metadata and receive deadline tests
+        shell: cmd
+        run: call tools\test-device-info.cmd
+
+      - name: Run isolated vault ACL and promotion tests
+        shell: powershell
+        run: .\tools\Test-VaultAclRepair.ps1
+
+      - name: Build pairing and unlock tools
+        shell: cmd
+        run: |
+          call tools\build-phone-pairing-demo.cmd
+          if errorlevel 1 exit /b 1
+          call tools\build-phone-unlock-demo.cmd
+
+      - name: Build WinUI management client
+        shell: pwsh
+        run: |
+          Copy-Item .\build\phone_pairing_demo.exe .\windows\desktop\Assets\phone_pairing_demo.exe
+          dotnet build .\windows\desktop\LivingUnlock.Windows.csproj -c Release -p:Platform=x64
+
+  android:
+    name: Android tests and Debug APK
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - name: Check out source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle cache and wrapper validation
+        uses: gradle/actions/setup-gradle@0723195856401067f7a2779048b490ace7a47d7c # v5
+        with:
+          cache-read-only: ${{ github.event_name == 'pull_request' }}
+
+      - name: Install Android SDK packages
+        run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-34" "build-tools;35.0.0"'
+
+      - name: Run Kotlin core and Android session unit tests
+        run: bash ./gradlew --no-daemon :core:test :app:testDebugUnitTest
+
+      - name: Build Debug APK
+        run: bash ./gradlew --no-daemon :app:assembleDebug
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: android-test-reports
+          path: |
+            android/core/build/reports/tests/
+            android/app/build/reports/tests/
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload Debug APK
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: livingunlock-android-debug
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 7

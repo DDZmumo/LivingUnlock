@@ -16,7 +16,8 @@ concurrency:
 jobs:
   windows:
     name: Windows build and tests
-    runs-on: windows-2025
+    # Matches the project's Visual Studio 2022 / C++17 toolchain.
+    runs-on: windows-2022
     timeout-minutes: 30
     steps:
       - name: Check out source
@@ -80,7 +81,7 @@ jobs:
       - name: Set up Gradle cache and wrapper validation
         uses: gradle/actions/setup-gradle@0723195856401067f7a2779048b490ace7a47d7c # v5
         with:
-          cache-read-only: ${{ github.event_name == 'pull_request' }}
+          cache-read-only: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
 
       - name: Install Android SDK packages
         run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-34" "build-tools;35.0.0"'

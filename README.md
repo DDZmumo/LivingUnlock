@@ -160,7 +160,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\Install.ps1
 
 [CI 工作流](.github/workflows/ci.yml) 在每个 PR、推送到 `main` 和手动触发时运行：
 
-- Windows Server 2025：使用 MSVC 和 Windows SDK 构建登录 DLL、原生配置工具、配对/解锁工具与 WinUI 客户端；运行原生测试、协议/密码学/配对存储测试、设备信息/接收期限测试，以及隔离的保险库 ACL 测试。
+- Windows Server 2022 / Visual Studio 2022：使用 MSVC 和 Windows SDK 构建登录 DLL、原生配置工具、配对/解锁工具与 WinUI 客户端；运行原生测试、协议/密码学/配对存储测试、设备信息/接收期限测试，以及隔离的保险库 ACL 测试。
 - Ubuntu 24.04 / JDK 17：运行 Kotlin 核心和 Android 会话单元测试，构建 Debug APK。测试报告和 Debug APK 作为 Actions artifacts 保留 7 天。
 
 托管 runner 没有蓝牙适配器，协议测试显式使用 `--no-bluetooth`，仅跳过真实适配器生命周期测试。本地 `tools/test-phone-windows.cmd` 不加参数时仍执行该测试。CI 不安装或注册登录组件，也不使用发行签名密钥；锁屏登录、蓝牙/生物识别实机行为和耗电仍需人工验证。本地 Android 构建通过 `JAVA_HOME` 选择 JDK，不在仓库中固定机器路径。

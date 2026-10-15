@@ -11,7 +11,7 @@ inline constexpr GUID RfcommServiceId = {0x9b3f4a10, 0x7c22, 0x4e89, {0x80,0xb1,
 inline constexpr GUID PhoneListenerServiceId = {0x9b3f4a10, 0x7c22, 0x4e89, {0x80,0xb1,0x5d,0x9c,0x71,0xa3,0xd0,0xf3}};
 std::uint64_t PeerBluetoothAddress(SOCKET socket) noexcept;
 SOCKET ConnectPairedPhone(std::uint64_t address, std::uint32_t timeoutMs,
-    const std::function<bool()>& cancelled) noexcept;
+    const std::function<bool()>& cancelled, HANDLE cancelEvent = nullptr) noexcept;
 
 class RfcommServer {
 public:
@@ -21,12 +21,15 @@ public:
     RfcommServer& operator=(const RfcommServer&) = delete;
     bool Start(const std::wstring& serviceName) noexcept;
     SOCKET Accept(std::uint32_t timeoutMs) noexcept;
+    HANDLE ConnectionEvent() const noexcept { return acceptEvent_; }
     std::string LocalBluetoothAddress() const;
+    void StopListening() noexcept;
     void Stop() noexcept;
 private:
     bool winsockStarted_ = false;
     bool advertised_ = false;
     SOCKET socket_ = INVALID_SOCKET;
+    WSAEVENT acceptEvent_ = WSA_INVALID_EVENT;
     SOCKADDR_BTH local_{};
     CSADDR_INFO addressInfo_{};
     WSAQUERYSETW query_{};

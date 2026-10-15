@@ -17,7 +17,14 @@ import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
+import org.robolectric.shadows.ShadowSystemClock
+import java.time.Duration
 
+@RunWith(RobolectricTestRunner::class)
+@Config(manifest = Config.NONE, sdk = [28])
 class UnlockSessionManagerTest {
 
     private val pcId = PcId.fromString("abcdef0123456789abcdef0123456789")
@@ -179,6 +186,21 @@ class UnlockSessionManagerTest {
         val canSign = UnlockSessionManager.tryStartSigning(expiredSession.requestId)
         assertFalse(canSign)
 
+        UnlockSessionManager.cancelActiveSession()
+    }
+
+    @Test
+    fun testSessionExpiresWhenMonotonicDeadlineIsReached() = runBlocking {
+        val session = createSession(ttlMs = 1000L, challengeTsMs = System.currentTimeMillis() + 1000L)
+        assertTrue(UnlockSessionManager.registerSession(session))
+        assertEquals(1000L, session.remainingTimeMs())
+        ShadowSystemClock.advanceBy(Duration.ofMillis(999))
+        assertEquals(1L, session.remainingTimeMs())
+        assertFalse(session.isExpired)
+        ShadowSystemClock.advanceBy(Duration.ofMillis(1))
+        assertEquals(0L, session.remainingTimeMs())
+        assertTrue(session.isExpired)
+        assertFalse(UnlockSessionManager.tryStartSigning(session.requestId))
         UnlockSessionManager.cancelActiveSession()
     }
 

@@ -20,12 +20,20 @@ function New-Case([string]$Name) {
     return $path
 }
 
-# Valid records are repaired; unrelated names keep their original ACL.
+# Valid records are repaired; unrelated explicit ACLs are not directly edited.
+# NTFS may refresh inherited ACEs when the parent vault ACL is repaired, so use
+# a protected ACL to distinguish a direct file write from normal inheritance.
 $normal = New-Case 'normal'
 $record = Join-Path $normal $name
 $unrelated = Join-Path $normal 'unrelated.bin'
 [IO.File]::WriteAllText($record, 'synthetic data')
 [IO.File]::WriteAllText($unrelated, 'synthetic data')
+$unrelatedAcl = Get-Acl $unrelated
+$unrelatedAcl.SetAccessRuleProtection($true, $true)
+Set-Acl -LiteralPath $unrelated -AclObject $unrelatedAcl
+$inheritedUnrelated = Join-Path $normal 'inherited-unrelated.bin'
+[IO.File]::WriteAllText($inheritedUnrelated, 'synthetic inherited data')
+Assert (-not (Get-Acl $inheritedUnrelated).AreAccessRulesProtected) 'Expected inherited fixture ACL'
 $originalUnrelated = (Get-Acl $unrelated).Sddl
 Assert ([LivingUnlock.Maintenance.VaultAclRepair]::Repair($normal) -eq 1) 'Wrong repaired count'
 $acl = Get-Acl $record
@@ -34,6 +42,7 @@ foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.Security
     Assert ($rule.IdentityReference.Value -in @('S-1-5-18','S-1-5-32-544')) 'Unexpected principal'
 }
 Assert ((Get-Acl $unrelated).Sddl -eq $originalUnrelated) 'Unrelated ACL changed'
+Assert (-not (Get-Acl $inheritedUnrelated).AreAccessRulesProtected) 'Unrelated inherited ACL was directly protected'
 
 $target = New-Case 'link-target'
 $targetRecord = Join-Path $target $name

@@ -376,7 +376,13 @@ void TestRfcommServerLifecycle() {
 
 int main(int argc, char** argv) {
     try {
-        if (argc == 2 && strcmp(argv[1], "--routing-only") == 0) {
+        const bool noBluetooth = argc == 2 && strcmp(argv[1], "--no-bluetooth") == 0;
+        const bool routingOnly = argc == 2 && strcmp(argv[1], "--routing-only") == 0;
+        if (argc > 1 && !noBluetooth && !routingOnly) {
+            std::cerr << "Usage: phone_broker_core_test.exe [--no-bluetooth | --routing-only]\n";
+            return 2;
+        }
+        if (routingOnly) {
             TestPhoneVault();
             Require(ConnectPairedPhone(0, 1000, [] { return false; }) == INVALID_SOCKET);
             Require(ConnectPairedPhone(0x102030405060ULL, 1000, [] { return true; }) == INVALID_SOCKET);
@@ -386,7 +392,8 @@ int main(int argc, char** argv) {
         TestFrames(); TestTranscript(); TestMessagePayloads(); TestPairingCrypto(); TestSignatureVerification();
         TestPhoneVault();
         TestSessions(); TestConcurrentBegin();
-        TestRfcommServerLifecycle();
+        if (noBluetooth) std::cout << "SKIP: physical Bluetooth adapter lifecycle (--no-bluetooth)\n";
+        else TestRfcommServerLifecycle();
         BcryptRandomSource random;
         std::array<std::uint8_t, 32> bytes{};
         Require(random.Fill(bytes.data(), bytes.size()));

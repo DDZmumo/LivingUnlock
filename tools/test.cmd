@@ -19,11 +19,15 @@ cl /nologo /std:c++17 /EHsc /W4 /WX /O2 /MT /utf-8 /Isrc tests\policy_test.cpp /
 if errorlevel 1 exit /b 1
 build\policy_test.exe
 if errorlevel 1 exit /b 1
+cl /nologo /std:c++17 /EHsc /W4 /WX /O2 /MT /utf-8 /Iwindows\broker tests\connection_window_test.cpp /Fobuild\ /Febuild\connection_window_test.exe
+if errorlevel 1 exit /b 1
+build\connection_window_test.exe
+if errorlevel 1 exit /b 1
 if not exist build\WindowsLockPin.dll call tools\build.cmd
 if errorlevel 1 exit /b 1
 set "WINSDK_VER=10.0.26100.0"
 set "WINRT_INC=%ProgramFiles(x86)%\Windows Kits\10\Include\%WINSDK_VER%\cppwinrt"
-cl /nologo /std:c++17 /EHsc /W4 /WX /O2 /MT /utf-8 /DLOCKPIN_TESTING /DUNICODE /D_UNICODE /D_WIN32_WINNT=0x0A00 /Isrc /Iwindows\common /Iwindows\broker /I"%WINRT_INC%" tests\provider_test.cpp src\provider.cpp src\auth.cpp src\vault.cpp src\totp.cpp windows\common\broker_protocol.cpp windows\common\canonical_transcript.cpp windows\common\phone_messages.cpp windows\common\pairing_crypto.cpp windows\common\phone_vault.cpp windows\broker\session_store.cpp windows\broker\rfcomm_server.cpp windows\broker\ble_advertiser.cpp /Fobuild\ /Febuild\provider_test.exe /link bcrypt.lib crypt32.lib advapi32.lib shell32.lib ole32.lib shlwapi.lib secur32.lib credui.lib user32.lib gdi32.lib uuid.lib ws2_32.lib bthprops.lib WindowsApp.lib
+cl /nologo /std:c++17 /EHsc /W4 /WX /O2 /MT /utf-8 /DLOCKPIN_TESTING /DUNICODE /D_UNICODE /D_WIN32_WINNT=0x0A00 /Isrc /Iwindows\common /Iwindows\broker /I"%WINRT_INC%" tests\provider_test.cpp src\provider.cpp src\auth.cpp src\vault.cpp src\totp.cpp windows\common\broker_protocol.cpp windows\common\canonical_transcript.cpp windows\common\phone_messages.cpp windows\common\pairing_crypto.cpp windows\common\phone_vault.cpp windows\broker\session_store.cpp windows\broker\rfcomm_server.cpp windows\broker\ble_advertiser.cpp windows\broker\bluetooth_radio_watcher.cpp /Fobuild\ /Febuild\provider_test.exe /link bcrypt.lib crypt32.lib advapi32.lib shell32.lib ole32.lib shlwapi.lib secur32.lib credui.lib user32.lib gdi32.lib uuid.lib ws2_32.lib bthprops.lib WindowsApp.lib cfgmgr32.lib
 if errorlevel 1 exit /b 1
 build\provider_test.exe
 if errorlevel 1 exit /b 1

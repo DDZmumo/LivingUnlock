@@ -15,6 +15,8 @@
 #include "phone_vault.h"
 #include "device_info.h"
 #include "rfcomm_server.h"
+#include "connection_window.h"
+#include "bluetooth_radio_watcher.h"
 #include "ble_advertiser.h"
 #include "session_store.h"
 #include <chrono>
@@ -121,6 +123,10 @@ bool IsWinlogonInputDesktop(std::wstring* desktopName = nullptr) noexcept {
     if (desktopName) *desktopName = name;
     return _wcsicmp(name, L"Winlogon") == 0;
 }
+
+// Out-of-context WinEvents are delivered by the gate thread's message pump.
+// Rechecking the desktop after dispatch is sufficient; no work runs in the hook.
+void CALLBACK DesktopChanged(HWINEVENTHOOK, DWORD, HWND, LONG, LONG, DWORD, DWORD) {}
 
 enum Field : DWORD {
     Icon,
@@ -369,6 +375,8 @@ class Provider final : public ICredentialProvider, public ICredentialProviderSet
     AutoUnlockState autoUnlock_;
     std::atomic<bool> bgRunning_{false};
     std::thread bgThread_;
+    std::mutex backgroundMutex_;
+    HANDLE backgroundWake_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     lockpin::phone::RfcommServer bgServer_;
     lockpin::phone::BleAdvertiser bgBle_;   // BLE "locked" beacon → wakes Android instantly
 
@@ -385,15 +393,16 @@ class Provider final : public ICredentialProvider, public ICredentialProviderSet
     std::mutex retryMutex_;
     std::condition_variable retryCv_;
     std::atomic<bool> waitingForRetry_{false};
-    std::atomic<bool> retryTriggered_{false};
 
     std::atomic<bool> interactionGateRunning_{false};
     std::thread interactionGateThread_;
+    HANDLE interactionGateStop_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     std::mutex interactionGateMutex_;
     std::wstring interactionGateSid_;
 
     void StopInteractionGate() {
         interactionGateRunning_ = false;
+        if (interactionGateStop_) SetEvent(interactionGateStop_);
         if (interactionGateThread_.joinable() &&
             interactionGateThread_.get_id() != std::this_thread::get_id()) {
             interactionGateThread_.join();
@@ -414,9 +423,13 @@ class Provider final : public ICredentialProvider, public ICredentialProviderSet
             interactionGateSid_ = sid;
         }
         interactionGateRunning_ = true;
+        if (interactionGateStop_) ResetEvent(interactionGateStop_);
         interactionGateThread_ = std::thread([this, sid] {
             bool listenerStarted = false;
             std::wstring lastDesktop;
+            const auto hook = SetWinEventHook(EVENT_SYSTEM_DESKTOPSWITCH, EVENT_SYSTEM_DESKTOPSWITCH,
+                nullptr, DesktopChanged, 0, 0, WINEVENT_OUTOFCONTEXT);
+            if (!hook) Log("Interaction gate: desktop notification unavailable; using one-second fallback");
             Log("Interaction gate started for SID %ls", sid.c_str());
 
             while (interactionGateRunning_) {
@@ -440,25 +453,39 @@ class Provider final : public ICredentialProvider, public ICredentialProviderSet
                     SetStatusForSid(sid, L"进入登录界面后，Living就来找你的手机。");
                 }
 
-                for (int i = 0; i < 10 && interactionGateRunning_; ++i)
-                    std::this_thread::sleep_for(std::chrono::milliseconds(25));
+                // No periodic desktop polling when the OS event hook is available.
+                const DWORD timeout = hook && interactionGateStop_ && !desktopName.empty() ? INFINITE : 1000;
+                const auto wake = MsgWaitForMultipleObjectsEx(interactionGateStop_ ? 1 : 0,
+                    interactionGateStop_ ? &interactionGateStop_ : nullptr, timeout,
+                    QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+                if (wake == WAIT_FAILED) break;
+                MSG message{};
+                while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+                    if (message.message == WM_QUIT) interactionGateRunning_ = false;
+                    TranslateMessage(&message);
+                    DispatchMessageW(&message);
+                }
             }
 
+            if (hook) UnhookWinEvent(hook);
+            interactionGateRunning_ = false;
             if (listenerStarted || bgRunning_.load()) StopBackgroundListener();
             Log("Interaction gate stopped for SID %ls", sid.c_str());
         });
     }
 
-    void WaitForRetry() {
+    void WaitForRetry(std::uint64_t completedGeneration) {
         Log("Background: Pausing and waiting for manual retry from PC UI...");
         bgBle_.Stop();
         AbortActiveClientSocket();
-        bgServer_.Stop();
+        // Keep Winsock alive until the worker releases its accepted client.
+        bgServer_.StopListening();
         {
             std::unique_lock<std::mutex> lock(retryMutex_);
             waitingForRetry_ = true;
-            retryCv_.wait(lock, [this] { return !bgRunning_ || retryTriggered_.load(); });
-            retryTriggered_ = false;
+            retryCv_.wait(lock, [this, completedGeneration] {
+                return !bgRunning_ || retryGeneration_.load() != completedGeneration;
+            });
             waitingForRetry_ = false;
         }
         Log("Background: Resumed from manual retry or stop (bgRunning=%d)", bgRunning_.load());
@@ -549,20 +576,29 @@ class Provider final : public ICredentialProvider, public ICredentialProviderSet
     }
 
     void StartBackgroundListener() {
-        StopBackgroundListener();
+        std::lock_guard<std::mutex> lock(backgroundMutex_);
+        StopBackgroundListenerLocked();
+        if (!backgroundWake_) {
+            SetStatusForAll(L"无法创建蓝牙等待事件，请先使用 PIN 登录。");
+            return;
+        }
         bgRunning_ = true;
         bgThread_ = std::thread(&Provider::BackgroundListenerProc, this);
     }
 
     void StopBackgroundListener() {
+        std::lock_guard<std::mutex> lock(backgroundMutex_);
+        StopBackgroundListenerLocked();
+    }
+
+    void StopBackgroundListenerLocked() {
         if (bgRunning_.exchange(false)) {
             Log("Stopping background RFCOMM listener...");
             AbortActiveClientSocket();
-            bgServer_.Stop();
+            if (backgroundWake_) SetEvent(backgroundWake_);
             autoUnlock_.cv.notify_all();
             {
                 std::lock_guard<std::mutex> lock(retryMutex_);
-                retryTriggered_ = true;
             }
             retryCv_.notify_all();
             if (bgThread_.joinable()) {
@@ -570,74 +606,161 @@ class Provider final : public ICredentialProvider, public ICredentialProviderSet
             }
             // Start/refresh runs on bgThread_; stop only after it can no longer publish.
             bgBle_.Stop();
+            bgServer_.Stop();
             Log("Background RFCOMM listener stopped.");
         }
+    }
+
+    SOCKET AwaitPhoneConnection(lockpin::phone::BluetoothRadioWatcher& radio,
+        std::uint64_t generation) {
+        using lockpin::phone::ConnectionWindow;
+        bgBle_.Stop();
+        bgServer_.Stop();
+        ConnectionWindow window;
+        bool available = radio.Refresh();
+        bool listening = false;
+        bool legacyFallback = false;
+        std::uint64_t fallbackDeadline = 0;
+        std::wstring lastStatus;
+        const auto status = [&](const std::wstring& text) {
+            if (text != lastStatus) { SetStatusForAll(text); lastStatus = text; }
+        };
+        const auto cancelled = [&] {
+            return !bgRunning_ || generation != retryGeneration_.load();
+        };
+
+        while (!cancelled()) {
+            auto now = GetTickCount64();
+            if (window.Expired(now) || (fallbackDeadline && now >= fallbackDeadline)) {
+                status(L"本次连接等待已结束，需要时请点“再次发送”。");
+                return INVALID_SOCKET;
+            }
+            if (!available) {
+                status(L"蓝牙尚未就绪，等待设备可用后连接手机。");
+                if (!radio.ChangeEvent()) {
+                    status(L"无法接收蓝牙设备通知，请等蓝牙开启后点“再次发送”。");
+                    return INVALID_SOCKET;
+                }
+            } else {
+                window.Start(now);
+                // Give an already queued legacy connection priority over a retry.
+                if (listening && WaitForSingleObject(bgServer_.ConnectionEvent(), 0) == WAIT_OBJECT_0) {
+                    const SOCKET incoming = bgServer_.Accept(0);
+                    if (incoming != INVALID_SOCKET) return incoming;
+                }
+                if (window.CanAttempt(now)) {
+                    const auto timeout = window.BeginAttempt(now);
+                    Log("Background: connection setup attempt %u/%u", window.Attempts(), ConnectionWindow::MaxAttempts);
+                    status(L"正在连接手机（第 " + std::to_wstring(window.Attempts()) + L"/" +
+                        std::to_wstring(ConnectionWindow::MaxAttempts) + L" 次）...");
+                    if (!listening) listening = bgServer_.Start(L"WindowsLockPin Unlock");
+                    if (!listening) {
+                        Log("Background: Bluetooth service not ready; using bounded backoff");
+                        window.Failed(GetTickCount64());
+                    } else {
+                        std::uint64_t phoneAddress = 0;
+                        {
+                            std::lock_guard<std::mutex> lock(pairedSidsMutex_);
+                            for (const auto& sid : pairedSids_) {
+                                const auto record = lockpin::phone::LoadPairedPhone(sid);
+                                if (record) { phoneAddress = record->phoneBluetoothAddress; break; }
+                            }
+                        }
+                        if (!phoneAddress) {
+                            // Only legacy records use BLE. Known routes never broadcast
+                            // or require the phone to scan when a connection fails.
+                            window.StopAttempts();
+                            legacyFallback = true;
+                            fallbackDeadline = GetTickCount64() +
+                                (std::min)(window.RemainingMs(GetTickCount64()), ConnectionWindow::LegacyFallbackMs);
+                            Log("Background: legacy pairing; enabling bounded BLE fallback");
+                            if (!bgBle_.Start(bgServer_.LocalBluetoothAddress())) {
+                                status(L"蓝牙兼容广播未能启动，请检查蓝牙后点“再次发送”。");
+                                return INVALID_SOCKET;
+                            }
+                        } else {
+                            // Setup time is included in the overall connection deadline.
+                            const auto remaining = window.RemainingMs(GetTickCount64());
+                            if (!remaining || cancelled()) return INVALID_SOCKET;
+                            const SOCKET client = lockpin::phone::ConnectPairedPhone(phoneAddress,
+                                (std::min)(timeout, remaining), cancelled, backgroundWake_);
+                            if (cancelled()) {
+                                if (client != INVALID_SOCKET) closesocket(client);
+                                return INVALID_SOCKET;
+                            }
+                            if (client != INVALID_SOCKET) return client;
+                            window.Failed(GetTickCount64());
+                            Log("Background: direct connection failed; attempt=%u", window.Attempts());
+                        }
+                    }
+                }
+            }
+            if (cancelled()) return INVALID_SOCKET;
+            now = GetTickCount64();
+            if (window.Expired(now) || (fallbackDeadline && now >= fallbackDeadline)) continue;
+            if (available && !legacyFallback && !window.HasPendingAttempt()) {
+                status(L"暂时没连上手机，请确认手机解锁监听已开启，再点“再次发送”。");
+                return INVALID_SOCKET;
+            }
+
+            DWORD waitMs = available ? window.WaitMs(now) : window.RemainingMs(now);
+            if (legacyFallback) {
+                const auto remaining = static_cast<DWORD>(fallbackDeadline - now);
+                status(L"等待旧配对手机回连，还剩 " + std::to_wstring(ConnectionWindow::CountdownSeconds(remaining)) + L" 秒。");
+                waitMs = (std::min)(waitMs, remaining);
+                waitMs = (std::min)(waitMs, DWORD{1000});
+            } else if (available && window.Attempts() > 0 && waitMs > 0) {
+                status(L"手机还没连上，" + std::to_wstring(ConnectionWindow::CountdownSeconds(waitMs)) +
+                    L" 秒后重试（第 " + std::to_wstring(window.Attempts() + 1) + L"/" +
+                    std::to_wstring(ConnectionWindow::MaxAttempts) + L" 次）。");
+                // The UI countdown is the only periodic wake during backoff.
+                // No timer runs while awaiting radio availability or manual retry.
+                waitMs = (std::min)(waitMs, DWORD{1000});
+            }
+            HANDLE handles[3] = {backgroundWake_};
+            DWORD count = 1;
+            DWORD radioIndex = MAXDWORD;
+            if (radio.ChangeEvent()) { radioIndex = count; handles[count++] = radio.ChangeEvent(); }
+            if (listening) handles[count++] = bgServer_.ConnectionEvent();
+            const auto result = WaitForMultipleObjects(count, handles, FALSE, waitMs);
+            if (result == WAIT_FAILED) {
+                Log("Background: connection event wait failed: %lu", GetLastError());
+                status(L"蓝牙等待失败，请点“再次发送”。");
+                return INVALID_SOCKET;
+            }
+            if (radioIndex != MAXDWORD && result == WAIT_OBJECT_0 + radioIndex) {
+                available = radio.Refresh();
+                if (!available && window.Started()) {
+                    // A removed adapter invalidates the current listening socket.
+                    // End this request instead of reusing it or extending its budget.
+                    status(L"蓝牙设备已断开，请恢复蓝牙后点“再次发送”。");
+                    return INVALID_SOCKET;
+                }
+            }
+        }
+        return INVALID_SOCKET;
     }
 
     void BackgroundListenerProc() {
         Log("Background RFCOMM listener thread started.");
         SetStatusForAll(L"手机呢...让我找找");
 
+        lockpin::phone::BluetoothRadioWatcher radio;
+        if (!radio.Start()) Log("Background: radio notification registration unavailable");
+
         while (bgRunning_) {
-            if (!bgServer_.Start(L"WindowsLockPin Unlock")) {
-                Log("Background RfcommServer::Start failed (Bluetooth may be unavailable or turned off)");
-                SetStatusForAll(L"蓝牙好像无响应，是不是出什么问题了");
-                std::unique_lock<std::mutex> lock(retryMutex_);
-                retryCv_.wait_for(lock, std::chrono::seconds(2), [this] { return !bgRunning_ || retryTriggered_.load(); });
-                continue;
-            }
-            Log("Background RFCOMM server listening on %s. Companion phone can connect automatically.",
-                bgServer_.LocalBluetoothAddress().c_str());
-            SetStatusForAll(L"手机呢...让我找找");
-
-            auto advertisedGeneration = retryGeneration_.load();
-            bool connectionAttempted = false;
-
+            const auto generation = retryGeneration_.load();
             while (bgRunning_) {
-                const auto requestedGeneration = retryGeneration_.load();
-                if (requestedGeneration != advertisedGeneration) {
-                    bgBle_.Stop();
-                    connectionAttempted = false;
-                    advertisedGeneration = requestedGeneration;
-                }
-                SOCKET client = INVALID_SOCKET;
-                if (!connectionAttempted) {
-                    connectionAttempted = true;
-                    std::uint64_t phoneAddress = 0;
-                    {
-                        std::lock_guard<std::mutex> lock(pairedSidsMutex_);
-                        for (const auto& sid : pairedSids_) {
-                            const auto record = lockpin::phone::LoadPairedPhone(sid);
-                            if (record) { phoneAddress = record->phoneBluetoothAddress; break; }
-                        }
-                    }
-                    if (phoneAddress) {
-                        Log("Background: attempting one direct phone connection");
-                        client = lockpin::phone::ConnectPairedPhone(phoneAddress, 8000, [this, requestedGeneration] {
-                            return !bgRunning_ || requestedGeneration != retryGeneration_.load();
-                        });
-                        Log("Background: direct phone connection connected=%d", client != INVALID_SOCKET);
-                    }
-                    if (!bgRunning_ || requestedGeneration != retryGeneration_.load()) {
-                        if (client != INVALID_SOCKET) closesocket(client);
-                        continue;
-                    }
-                    if (client == INVALID_SOCKET) {
-                        const bool advertising = bgBle_.Start(bgServer_.LocalBluetoothAddress());
-                        Log("BLE manufacturer beacon fallback started=%d", advertising);
-                    }
-                }
-                if (client == INVALID_SOCKET) client = bgServer_.Accept(1000);
+                const SOCKET client = AwaitPhoneConnection(radio, generation);
                 if (client == INVALID_SOCKET) {
-                    continue;
+                    if (bgRunning_ && generation == retryGeneration_.load()) WaitForRetry(generation);
+                    break;
                 }
-                if (!bgRunning_) {
+                if (!bgRunning_ || generation != retryGeneration_.load()) {
                     closesocket(client);
                     break;
                 }
-
                 Log("Background: Companion phone connected! Socket: %zu", client);
-                const auto generation = retryGeneration_.load();
                 // Phone has connected — stop the BLE beacon to save power
                 bgBle_.Stop();
                 Log("BLE beacon stopped (phone is connected).");
@@ -679,7 +802,8 @@ class Provider final : public ICredentialProvider, public ICredentialProviderSet
                 if (!phoneOpt.has_value() || targetSid.empty()) {
                     Log("Background: No paired phone record found for any current user.");
                     SetStatusForAll(L"不是这个手机！用PIN登录配对去！");
-                    continue;
+                    WaitForRetry(generation);
+                    break;
                 }
 
                 auto& phoneRecord = *phoneOpt;
@@ -693,7 +817,7 @@ class Provider final : public ICredentialProvider, public ICredentialProviderSet
                 if (!random.Fill(nonce.data(), nonce.size())) {
                     Log("Background: Failed to generate random nonce");
                     SetStatusForSid(targetSid, L"刚刚出了点问题...点“再次发送”让我再试试");
-                    WaitForRetry();
+                    WaitForRetry(generation);
                     break;
                 }
 
@@ -701,7 +825,7 @@ class Provider final : public ICredentialProvider, public ICredentialProviderSet
                 if (!random.Fill(requestIdBytes.data(), requestIdBytes.size())) {
                     Log("Background: Failed to generate random request ID");
                     SetStatusForSid(targetSid, L"刚刚出了点问题...点“再次发送”让我再试试");
-                    WaitForRetry();
+                    WaitForRetry(generation);
                     break;
                 }
                 std::uint64_t requestId = 0;
@@ -711,8 +835,6 @@ class Provider final : public ICredentialProvider, public ICredentialProviderSet
                     std::lock_guard<std::mutex> lock(autoUnlock_.mutex);
                     if (generation != retryGeneration_.load()) continue;
                     activeRequestId_.store(requestId);
-                    std::lock_guard<std::mutex> retryLock(retryMutex_);
-                    retryTriggered_ = false; // This new challenge consumes the pending resend.
                 }
 
                 const auto sendUnlockResult = [&](std::uint16_t statusCode, const char* resultMessage) noexcept {
@@ -778,7 +900,7 @@ class Provider final : public ICredentialProvider, public ICredentialProviderSet
                 if (!lockpin::phone::SendAll(client, lockpin::phone::EncodeFrame(challengeFrame))) {
                     Log("Background: SendAll challenge frame failed");
                     SetStatusForSid(targetSid, L"咦，请求没发过去...再发一次看看");
-                    WaitForRetry();
+                    WaitForRetry(generation);
                     break;
                 }
                 Log("Background: UNLOCK_CHALLENGE sent. Waiting for UNLOCK_RESPONSE from phone...");
@@ -790,7 +912,7 @@ class Provider final : public ICredentialProvider, public ICredentialProviderSet
                     SetStatusForSid(targetSid, GetTickCount64() >= challengeDeadlineTick
                         ? L"请求超时了，再给Living我发一遍"
                         : L"刚还连着呢，怎么断了...让我再找找");
-                    WaitForRetry();
+                    WaitForRetry(generation);
                     break;
                 }
 
@@ -799,14 +921,14 @@ class Provider final : public ICredentialProvider, public ICredentialProviderSet
                     Log("Background: DecodeFrame failed");
                     sendUnlockResult(1, "Malformed unlock response");
                     SetStatusForSid(targetSid, L"是这个手机吗...再发一次请求看看");
-                    WaitForRetry();
+                    WaitForRetry(generation);
                     break;
                 }
 
                 if (frameResult.frame->type == lockpin::phone::MessageType::Cancel) {
                     Log("Background: User cancelled biometric prompt on phone");
                     SetStatusForSid(targetSid, L"好的，我就在这里等你");
-                    WaitForRetry();
+                    WaitForRetry(generation);
                     break;
                 }
 
@@ -815,7 +937,7 @@ class Provider final : public ICredentialProvider, public ICredentialProviderSet
                     Log("Background: Unexpected frame or requestId mismatch");
                     sendUnlockResult(1, "Invalid response");
                     SetStatusForSid(targetSid, L"是这个手机吗...再发一次请求看看");
-                    WaitForRetry();
+                    WaitForRetry(generation);
                     break;
                 }
 
@@ -825,7 +947,7 @@ class Provider final : public ICredentialProvider, public ICredentialProviderSet
                     Log("Background: Unlock response invalid or rejected");
                     sendUnlockResult(1, "Unlock rejected or nonce mismatch");
                     SetStatusForSid(targetSid, L"是这个手机吗...再发一次请求看看");
-                    WaitForRetry();
+                    WaitForRetry(generation);
                     break;
                 }
 
@@ -845,7 +967,7 @@ class Provider final : public ICredentialProvider, public ICredentialProviderSet
                     Log("Background: >>> P-256 SIGNATURE VERIFICATION FAILED! <<<");
                     sendUnlockResult(1, "Biometric signature rejected");
                     SetStatusForSid(targetSid, L"是这个手机吗...再发一次请求看看");
-                    WaitForRetry();
+                    WaitForRetry(generation);
                     break;
                 }
 
@@ -858,7 +980,7 @@ class Provider final : public ICredentialProvider, public ICredentialProviderSet
                     Log("Background: LoadEnrolledCredentials FAILED for SID %ls", targetSid.c_str());
                     sendUnlockResult(2, "Windows credential is unavailable");
                     SetStatusForSid(targetSid, L"保存的账户凭据不见了...先用PIN进桌面重新保存一下");
-                    WaitForRetry();
+                    WaitForRetry(generation);
                     break;
                 }
 
@@ -869,7 +991,7 @@ class Provider final : public ICredentialProvider, public ICredentialProviderSet
                     Log("Background: PackIdentity FAILED: 0x%08X", hr);
                     sendUnlockResult(2, "Windows could not prepare the credential");
                     SetStatusForSid(targetSid, L"登录凭据没准备好...先用PIN进桌面看看");
-                    WaitForRetry();
+                    WaitForRetry(generation);
                     break;
                 }
 
@@ -919,6 +1041,9 @@ class Provider final : public ICredentialProvider, public ICredentialProviderSet
                 std::unique_lock<std::mutex> lock(autoUnlock_.mutex);
                 autoUnlock_.cv.wait(lock, [this] { return !bgRunning_ || !autoUnlock_.ready; });
             }
+            // Consuming a successful credential is not a new request. Wait for
+            // deselection/stop or explicit resend instead of starting a new window.
+            if (bgRunning_ && generation == retryGeneration_.load()) WaitForRetry(generation);
         }
         Log("Background RFCOMM listener thread exited.");
     }
@@ -942,11 +1067,34 @@ public:
                 std::this_thread::sleep_for(std::chrono::milliseconds(5));
             if (!done) { watchdogFired = true; bgRunning_ = false; retryCv_.notify_all(); }
         });
-        WaitForRetry();
+        WaitForRetry(0);
         done = true;
         watchdog.join();
         bgRunning_ = false;
         return invalidated && !watchdogFired;
+    }
+
+    bool TestRetryWaitGeneration() {
+        bgRunning_ = true;
+        TriggerRetry(L"test");
+        const auto generation = retryGeneration_.load();
+        std::atomic<bool> done{false};
+        std::atomic<bool> enteredWait{false};
+        std::atomic<bool> wokeEarly{false};
+        std::thread resender([&] {
+            for (int i = 0; i < 100 && !waitingForRetry_; ++i)
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            enteredWait = waitingForRetry_.load();
+            std::this_thread::sleep_for(std::chrono::milliseconds(25));
+            wokeEarly = done.load();
+            TriggerRetry(L"test");
+        });
+        // A retry already used by this request must not revive it after timeout.
+        WaitForRetry(generation);
+        done = true;
+        resender.join();
+        bgRunning_ = false;
+        return enteredWait && !wokeEarly;
     }
 #endif
 
@@ -956,6 +1104,8 @@ public:
         StopBackgroundListener();
         Clear();
         if (users_) users_->Release();
+        if (backgroundWake_) CloseHandle(backgroundWake_);
+        if (interactionGateStop_) CloseHandle(interactionGateStop_);
         InterlockedDecrement(&moduleReferences);
     }
 
@@ -988,9 +1138,9 @@ public:
         // Wake background thread from WaitForRetry if it was paused
         {
             std::lock_guard<std::mutex> lock(retryMutex_);
-            retryTriggered_ = true;
         }
         retryCv_.notify_all();
+        if (backgroundWake_) SetEvent(backgroundWake_);
         AbortActiveClientSocket();
 
         if (!bgRunning_) {
@@ -1010,6 +1160,7 @@ public:
             SecureZeroMemory(autoUnlock_.serializedData.data(), autoUnlock_.serializedData.size());
             autoUnlock_.serializedData.clear();
             autoUnlock_.ready = false;
+            autoUnlock_.cv.notify_all();
             return true;
         }
         return false;
@@ -1259,6 +1410,13 @@ public:
 bool TestProviderRetryBeforeWait() {
     auto* provider = new Provider;
     const bool passed = provider->TestRetryBeforeWait();
+    provider->Release();
+    return passed;
+}
+
+bool TestProviderRetryWaitGeneration() {
+    auto* provider = new Provider;
+    const bool passed = provider->TestRetryWaitGeneration();
     provider->Release();
     return passed;
 }

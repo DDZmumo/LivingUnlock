@@ -12,11 +12,19 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.text.font.FontWeight
@@ -24,6 +32,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.windowslockpin.companion.R
 import com.windowslockpin.companion.ui.theme.IceBluePrimary
+import com.windowslockpin.companion.update.ReleaseUpdate
+import com.windowslockpin.companion.update.ReleaseUpdateChecker
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.launch
+import java.net.SocketTimeoutException
+import java.net.UnknownHostException
 
 @Composable
 fun SettingsScreen(
@@ -49,6 +63,7 @@ fun SettingsScreen(
             }
             Column(Modifier.weight(1f).verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                UpdateSettingsCard()
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Default.Bluetooth, null, tint = IceBluePrimary)
                     Spacer(Modifier.width(8.dp))
@@ -89,6 +104,88 @@ fun SettingsScreen(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun UpdateSettingsCard() {
+    val context = LocalContext.current
+    val uriHandler = LocalUriHandler.current
+    val scope = rememberCoroutineScope()
+    val version = remember {
+        context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "未知"
+    }
+    var includePrerelease by rememberSaveable { mutableStateOf(true) }
+    var checking by remember { mutableStateOf(false) }
+    var message by remember { mutableStateOf("手动检查 GitHub Releases 中的 Android 安装包。") }
+    var result by remember { mutableStateOf<ReleaseUpdate?>(null) }
+
+    SettingsCard {
+        Text("应用更新", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.height(8.dp))
+        SettingsBody("当前版本：$version")
+        Spacer(Modifier.height(12.dp))
+        SettingToggle("包含预发布版本", "包括 GitHub 标记的实验版。", includePrerelease) {
+            if (!checking) {
+                includePrerelease = it
+                result = null
+                message = "版本范围已切换，请重新检查。"
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+        Button(onClick = {
+            if (!checking) scope.launch {
+                checking = true
+                result = null
+                message = "正在连接 GitHub…"
+                try {
+                    val release = ReleaseUpdateChecker.check(version, includePrerelease)
+                    result = release
+                    message = when {
+                        release == null -> "所选范围内暂无 Android 安装包。可尝试包含预发布版本。"
+                        release.isNewer -> "发现新版本 ${release.tag}${if (release.prerelease) "（预发布）" else ""}"
+                        else -> "当前无需更新。GitHub 上 Android 最新版本为 ${release.tag}${if (release.prerelease) "（预发布）" else ""}。"
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    message = when (e) {
+                        is SocketTimeoutException -> "检查超时，请重试。"
+                        is UnknownHostException -> "无法连接 GitHub，请检查网络后重试。"
+                        else -> e.message ?: "检查失败，请稍后重试。"
+                    }
+                } finally { checking = false }
+            }
+        }, enabled = !checking, modifier = Modifier.fillMaxWidth()) {
+            if (checking) {
+                CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp, color = Color.White)
+                Spacer(Modifier.width(8.dp))
+            }
+            Text(if (checking) "正在检查…" else "检查更新")
+        }
+        Spacer(Modifier.height(10.dp))
+        Text(message, color = if (result?.isNewer == true) IceBluePrimary else Color(0xFFC5D5E4), fontSize = 14.sp)
+        result?.let { release ->
+            if (release.notes.isNotBlank()) {
+                Spacer(Modifier.height(10.dp))
+                SettingsBody(release.notes.take(3000))
+            }
+            if (context.packageName.endsWith(".debug") && release.isNewer) {
+                Spacer(Modifier.height(8.dp))
+                SettingsBody("当前是调试版。GitHub 的正式签名 APK 会作为独立应用安装，配对不会自动迁移。")
+            }
+            Spacer(Modifier.height(10.dp))
+            Button(onClick = {
+                runCatching { uriHandler.openUri(if (release.isNewer) release.downloadUrl else release.releaseUrl) }
+                    .onFailure { message = "无法打开浏览器，请在 GitHub 查看 Release。" }
+            }, modifier = Modifier.fillMaxWidth()) {
+                Text(if (release.isNewer) "下载安装包" else "查看此版本")
+            }
+        }
+        TextButton(onClick = {
+            runCatching { uriHandler.openUri(ReleaseUpdateChecker.RELEASES_URL) }
+                .onFailure { message = "无法打开浏览器。" }
+        }) { Text("查看 GitHub Releases", color = IceBluePrimary) }
     }
 }
 

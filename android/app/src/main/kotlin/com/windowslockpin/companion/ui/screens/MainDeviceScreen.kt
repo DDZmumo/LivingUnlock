@@ -216,6 +216,8 @@ fun MainDeviceScreen(
             Spacer(modifier = Modifier.height(16.dp))
 
             // Scan QR code button
+            ApplicationTimeBar()
+            Spacer(modifier=Modifier.height(10.dp))
             Button(
                 onClick = onScanQrCode,
                 modifier = Modifier

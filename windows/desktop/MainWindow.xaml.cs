@@ -18,6 +18,15 @@ public sealed partial class MainWindow : Window
     public VaultService Vault { get; } = new();
     public AccountInfo CurrentAccount { get; set; } = new();
     private WindowWheelRouter? _wheelRouter;
+    private bool _updateDialogOpen;
+
+    private async void OnCheckUpdatesClicked(object sender, RoutedEventArgs e)
+    {
+        if (_updateDialogOpen) return;
+        _updateDialogOpen = true;
+        try { await new UpdateDialog { XamlRoot = WindowRoot.XamlRoot }.ShowAsync(); }
+        finally { _updateDialogOpen = false; }
+    }
 
     public MainWindow()
     {
@@ -41,7 +50,8 @@ public sealed partial class MainWindow : Window
         if (appWindow is null) return;
 
         _wheelRouter = new WindowWheelRouter(hwnd,
-            () => (RootFrame.Content as FrameworkElement)?.FindName("PageScrollViewer") as ScrollViewer);
+            () => _updateDialogOpen ? null :
+                (RootFrame.Content as FrameworkElement)?.FindName("PageScrollViewer") as ScrollViewer);
 
         appWindow.Title = "LivingUnlock";
 

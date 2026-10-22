@@ -72,7 +72,8 @@ class UnlockSessionManagerTest {
         reqId: RequestId = RequestId.generate(),
         ttlMs: Long = 30000L,
         challengeTsMs: Long = System.currentTimeMillis(),
-        transport: TransportConnection = FakeTransportConnection.createPair().first
+        transport: TransportConnection = FakeTransportConnection.createPair().first,
+        receivedElapsedMs: Long = android.os.SystemClock.elapsedRealtime()
     ): ActiveUnlockSession {
         val nonce = ChallengeNonce.generate(32)
         val challenge = UnlockChallenge(
@@ -89,7 +90,7 @@ class UnlockSessionManagerTest {
             challenge = challenge,
             connection = transport,
             transcript = transcript,
-            expiresAtMs = challenge.timestampMs + challenge.ttlMs
+            receivedElapsedMs = receivedElapsedMs
         )
     }
 
@@ -179,7 +180,7 @@ class UnlockSessionManagerTest {
     fun testExpiredSessionCannotBeSigned() = runBlocking {
         val expiredSession = createSession(
             ttlMs = 1000L,
-            challengeTsMs = System.currentTimeMillis() - 5000L
+            receivedElapsedMs = android.os.SystemClock.elapsedRealtime() - 5000L
         )
         UnlockSessionManager.registerSession(expiredSession)
 
@@ -205,6 +206,27 @@ class UnlockSessionManagerTest {
     }
 
     @Test
+    fun testThirtySecondRequestSurvivesHostClockSkew() = runBlocking {
+        // Exercise the same validation + session registration path as the service.
+        // A host 29.4 seconds behind used to leave only 600 ms for confirmation.
+        for (hostOffsetMs in listOf(-29_400L, -86_400_000L, 86_400_000L)) {
+            currentTimeMs = System.currentTimeMillis()
+            val session = createSession(challengeTsMs = currentTimeMs + hostOffsetMs)
+            assertTrue(coordinator.processIncomingChallenge(session.requestId, session.challenge, pairedRecord).isSuccess)
+            assertTrue(UnlockSessionManager.registerSession(session))
+            assertEquals(30_000L, session.remainingTimeMs())
+            ShadowSystemClock.advanceBy(Duration.ofSeconds(5))
+            assertEquals(25_000L, session.remainingTimeMs())
+            assertTrue(UnlockSessionManager.tryStartSigning(session.requestId))
+            UnlockSessionManager.cancelSigning(session.requestId)
+            ShadowSystemClock.advanceBy(Duration.ofSeconds(25))
+            assertTrue(session.isExpired)
+            assertFalse(UnlockSessionManager.tryStartSigning(session.requestId))
+            UnlockSessionManager.cancelActiveSession()
+        }
+    }
+
+    @Test
     fun testNotificationRequestIdMismatchGuard() {
         val validReqId = RequestId.generate()
         val otherReqId = RequestId.generate()
@@ -226,7 +248,7 @@ class UnlockSessionManagerTest {
         val expiredSession = createSession(
             reqId = validReqId,
             ttlMs = 1000L,
-            challengeTsMs = System.currentTimeMillis() - 5000L
+            receivedElapsedMs = android.os.SystemClock.elapsedRealtime() - 5000L
         )
         assertFalse(UnlockSessionManager.shouldTriggerBiometricForNotification(expiredSession, validReqId.value))
     }

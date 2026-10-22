@@ -7,6 +7,7 @@
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
     Background="Transparent"
     Loaded="OnPageLoaded"
+    Unloaded="OnPageUnloaded"
     mc:Ignorable="d">
 
     <ScrollViewer x:Name="PageScrollViewer" VerticalScrollMode="Enabled" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" SizeChanged="OnScrollViewportSizeChanged">
@@ -53,6 +54,17 @@
                                 </Border>
                             </StackPanel>
                         </StackPanel>
+                        <Border x:Name="ClockCard" Grid.Column="1" HorizontalAlignment="Right" VerticalAlignment="Center"
+                                MaxWidth="238" Padding="16" CornerRadius="16" Background="#C914283F" BorderBrush="#637DC6EB" BorderThickness="1">
+                            <StackPanel Spacing="7">
+                                <TextBlock Text="应用内时间" FontSize="12" Foreground="#D8ECFA" />
+                                <TextBlock x:Name="ClockTimeText" Text="--:--:--" FontFamily="Consolas" FontSize="30" Foreground="#F2FAFF" />
+                                <TextBlock x:Name="ClockDateText" FontSize="11" Foreground="#C0D4E7" />
+                                <TextBlock x:Name="ClockStatusText" Text="独立计时" FontSize="11" Foreground="#87D8EF" TextTrimming="CharacterEllipsis" />
+                                <Button x:Name="CalibrateTimeButton" Content="校准时间" Click="OnCalibrateTimeClicked"
+                                        HorizontalAlignment="Stretch" MinHeight="32" FontSize="12" Padding="10,4" />
+                            </StackPanel>
+                        </Border>
                     </Grid>
                 </Grid>
             </Border>

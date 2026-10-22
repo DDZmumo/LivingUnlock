@@ -22,12 +22,14 @@ data class ActiveUnlockSession(
     val challenge: UnlockChallenge,
     val connection: TransportConnection,
     val transcript: ByteArray,
-    val expiresAtMs: Long = challenge.timestampMs + challenge.ttlMs,
+    val receivedElapsedMs: Long = android.os.SystemClock.elapsedRealtime(),
     @Volatile var isSigning: Boolean = false,
     @Volatile var isSigned: Boolean = false
 ) {
-    private val deadlineElapsedMs = android.os.SystemClock.elapsedRealtime() +
-        (expiresAtMs - System.currentTimeMillis()).coerceIn(0L, challenge.ttlMs.toLong())
+    // The host timestamp belongs to the PC's clock and is signed unchanged.
+    // Windows enforces the authoritative deadline; our local UI/signing budget
+    // starts at receipt and must never subtract two devices' wall clocks.
+    private val deadlineElapsedMs = receivedElapsedMs + challenge.ttlMs
     val isExpired: Boolean
         get() = remainingTimeMs() == 0L
 

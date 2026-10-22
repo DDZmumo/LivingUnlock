@@ -233,7 +233,7 @@ The canonical transcript is strictly defined as follows:
 | `0x0004` | `FRAME_OVERSIZE` | Frame exceeds 8,192 bytes. |
 | `0x0005` | `MALFORMED_PAYLOAD` | Payload length prefix or field invalid. |
 | `0x0006` | `REPLAY_DETECTED` | Challenge nonce already seen or expired. |
-| `0x0007` | `EXPIRED` | Message timestamp outside acceptable clock-skew / TTL window. |
+| `0x0007` | `EXPIRED` | Local validity deadline has elapsed (host unlock deadline or pairing QR expiry). |
 | `0x0008` | `UNEXPECTED_STATE` | Message received in invalid state-machine state. |
 | `0x0009` | `CRYPTO_FAILURE` | Key generation, signature, or verification failure. |
 | `0x000A` | `DEVICE_MISMATCH` | PC ID or Device ID does not match paired record. |
@@ -264,13 +264,65 @@ stateDiagram-v2
 
 ### 7.1 Replay Defense and Freshness Rules
 1. **Replay Cache**: The companion and Windows host maintain an in-memory sliding cache of seen `challenge_nonce` values with their timestamps. A challenge nonce MUST NEVER be evaluated more than once.
-2. **Clock-Skew Tolerance**: Challenges where `abs(now_ms - timestamp_ms) > 60_000` (60 seconds) MUST be rejected with `EXPIRED`.
-3. **TTL Enforcement**: Challenges where `now_ms > (timestamp_ms + ttl_ms)` MUST be rejected with `EXPIRED`.
+2. **Independent Clock Domains**: The companion MUST NOT compare its wall clock with the host's `timestamp_ms`. The original timestamp and TTL remain unchanged in the signed transcript. Optional application-time calibration occurs before a challenge is issued and never changes its validity budget.
+3. **TTL Enforcement**: The host MUST enforce its own monotonic deadline, established when it issues the challenge, and MUST reject late responses without releasing credentials. The companion starts a local monotonic TTL budget at receipt, disallows signing after that budget expires, and clears the request when the host closes the connection. Transmission and UI delays do not extend the host's deadline. Pairing QR expiry continues to use epoch time.
 4. **Single In-Flight Challenge**: Only one challenge may be active at any time per paired PC. An incoming challenge while a biometric prompt is already active cancels the prior challenge.
 
 ---
 
 ## 8. Authenticated Channel Extensions (HKDF and AES-256-GCM)
+
+### 8.1 Application-time preparation
+
+The optional `LUTM` extension uses PONG (host to phone) and PING (phone to host)
+without changing protocol v1 framing or credential serialization. A legacy peer
+may ignore it; failure or retry exhaustion continues with independent timers.
+Application time is seeded from system UTC at startup and advances monotonically.
+Network calibration never changes either device's system clock or the native PIN provider.
+
+Each time payload is exactly 100 bytes, with big-endian integer fields:
+
+| Offset | Bytes | Meaning |
+|---|---:|---|
+| 0 | 4 | ASCII `LUTM` |
+| 4 | 1 | Extension version `1` |
+| 5 | 1 | Phase: probe `0`, probe reply `1`, calibrate `2`, sample reply `3`, commit `4`, commit reply `5` |
+| 6 | 1 | Source: NTSC `0`, Alibaba `1`, Tencent `2`, Microsoft `3`, uncalibrated `255` |
+| 7 | 1 | Reserved, zero |
+| 8 | 8 | Current request ID, also matched against the frame header |
+| 16 | 32 | Fresh nonce bound to this connection's upcoming challenge |
+| 48 | 8 | Sender's application UTC milliseconds at send |
+| 56 | 4 | Original network sample age, preserved across transfers |
+| 60 | 4 | Estimated uncertainty in milliseconds |
+| 64 | 4 | Phone processing duration in replies, estimated one-way transit in commit |
+| 68 | 32 | HMAC-SHA256 over bytes 0..67 |
+
+Derive a separate authentication key using
+`HMAC-SHA256(K_pair, ASCII("LivingUnlock application time v1"))`.
+Verify the MAC, frame/request identity, nonce, phase, sample age and bounds before
+applying a peer sample. Duplicate messages on the same connection are idempotent
+and bounded; a previously seen probe on a different connection is ignored.
+
+The host exchanges application time and accounts for measured round-trip delay.
+A difference exceeding 2 seconds plus estimated uncertainty triggers calibration.
+Fresh samples younger than 10 minutes may be shared without another network request.
+Android is preferred when fetching is necessary; Windows is the fallback.
+Each fetching round queries `ntp.ntsc.ac.cn`, `ntp.aliyun.com`, and `ntp.tencent.com`
+concurrently. If there is no usable consistent result, query `time.windows.com`.
+Validate NTP server mode/version, synchronization and stratum, echoed request nonce,
+timestamps and latency. Prefer NTSC among consistent responses and reject isolated
+outliers or conflicting pairs. These public NTP responses are advisory time data,
+not an authentication factor or a replacement for the host's signature/deadline checks.
+
+Windows waits for a network route at login-component startup, then makes at most
+three fetching attempts; Android makes at most three attempts after app startup.
+During unlock preparation, each phase/fetch may retry once, then continues with
+independent timers. All preparation happens before creating the 30-second challenge.
+The Android UI cannot initiate biometric signing while only preparation exists.
+Late time replies are skipped under the original challenge deadline, never treated
+as an unlock response or used to extend authentication time.
+
+### 8.2 Future encrypted payloads
 
 For subsequent phases requiring encrypted payload transport:
 - **Phase 1 pairing authentication**: The 128-256 bit QR `pair_token` is the out-of-band secret. Derive `K_pair = HKDF-SHA-256(salt=pc_id || device_id, IKM=pair_token, info="WSLP-V1-PAIRING-KEY", L=32)` and erase the raw token after pairing.

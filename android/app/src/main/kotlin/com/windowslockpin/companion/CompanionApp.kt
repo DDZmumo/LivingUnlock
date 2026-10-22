@@ -11,6 +11,7 @@ import com.windowslockpin.companion.service.UnlockSessionManager
 class CompanionApp : Application() {
     override fun onCreate() {
         super.onCreate()
+        com.windowslockpin.companion.time.AppTime.start(this)
         SafeLogger.i(TAG, "WindowsLockPin Companion application initialized")
 
         // Track foreground/background state so floating heads-up notifications

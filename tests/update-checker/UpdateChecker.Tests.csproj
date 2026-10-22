@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="..\..\windows\desktop\Services\ReleaseUpdateService.cs" Link="ReleaseUpdateService.cs" />
+    <None Include="..\..\android\app\src\test\resources\github-releases.json" Link="github-releases.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

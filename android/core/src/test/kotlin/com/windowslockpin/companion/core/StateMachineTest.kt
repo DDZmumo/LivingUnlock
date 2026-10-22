@@ -127,18 +127,14 @@ class StateMachineTest {
     }
 
     @Test
-    fun testExpiredChallengeDetection() {
+    fun testChallengeReceptionDoesNotDependOnHostClock() {
         testSuccessfulPairingFlow()
-
-        val reqId = RequestId(201L)
-        val nonce = ChallengeNonce(ByteArray(32) { 0x99.toByte() })
-        // Challenge timestamp 70 seconds in the past (exceeds MAX_CLOCK_SKEW_MS 60s)
-        val expiredChallenge = UnlockChallenge(pcId, nonce, currentTimeMs - 70000L, 30000L, "Alice")
-
-        val r = stateMachine.onUnlockChallengeReceived(reqId, expiredChallenge)
-        assertTrue(r.isFailure)
-        val fail = r as ProtocolResult.Failure
-        assertEquals(ProtocolErrorCode.EXPIRED, fail.errorCode)
+        for (hostOffsetMs in listOf(-29_400L, -86_400_000L, 86_400_000L)) {
+            val challenge = UnlockChallenge(pcId, ChallengeNonce.generate(32),
+                currentTimeMs + hostOffsetMs, 30_000L, "Alice")
+            assertTrue(stateMachine.onUnlockChallengeReceived(RequestId.generate(), challenge, pcId).isSuccess)
+            stateMachine.onCancelled("Finished clock-skew test request")
+        }
     }
 
     @Test

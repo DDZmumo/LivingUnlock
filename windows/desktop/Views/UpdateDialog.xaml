@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ContentDialog
+    x:Class="LivingUnlock.Windows.Views.UpdateDialog"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    Title="检查 LivingUnlock 更新"
+    PrimaryButtonText="下载安装包" CloseButtonText="关闭"
+    IsPrimaryButtonEnabled="False" DefaultButton="Close"
+    PrimaryButtonClick="OnDownloadClicked" Loaded="OnLoaded">
+    <StackPanel Spacing="14" MinWidth="360">
+        <TextBlock x:Name="VersionText" />
+        <CheckBox x:Name="IncludePrerelease" Content="包含预发布版本（实验版）" IsChecked="True"
+                  Checked="OnChannelChanged" Unchecked="OnChannelChanged" />
+        <TextBlock Text="从 DDZmumo/LivingUnlock 的 GitHub Releases 检查 Windows x64 安装包。" TextWrapping="Wrap" Opacity="0.7" />
+        <StackPanel Orientation="Horizontal" Spacing="12">
+            <ProgressRing x:Name="CheckingRing" Width="20" Height="20" IsActive="False" />
+            <Button x:Name="CheckButton" Content="重新检查" Click="OnCheckClicked" />
+        </StackPanel>
+        <InfoBar x:Name="ResultBar" IsOpen="True" IsClosable="False" Severity="Informational" Message="正在检查…" />
+        <ScrollViewer MaxHeight="260" VerticalScrollBarVisibility="Auto">
+            <TextBlock x:Name="NotesText" TextWrapping="Wrap" IsTextSelectionEnabled="True" />
+        </ScrollViewer>
+        <HyperlinkButton Content="查看 GitHub Releases" NavigateUri="https://github.com/DDZmumo/LivingUnlock/releases" />
+    </StackPanel>
+</ContentDialog>

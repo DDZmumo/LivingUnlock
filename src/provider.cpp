@@ -19,6 +19,8 @@
 #include "bluetooth_radio_watcher.h"
 #include "ble_advertiser.h"
 #include "session_store.h"
+#include "time_handshake.h"
+#include "application_time_cache.h"
 #include <chrono>
 #include <shlwapi.h>
 #include <propkey.h>
@@ -364,6 +366,7 @@ struct AutoUnlockState {
 };
 
 class Provider final : public ICredentialProvider, public ICredentialProviderSetUserArray {
+    lockpin::phone::ApplicationTimeEngine applicationTime_;
     long references_ = 1;
     ICredentialProviderUserArray* users_ = nullptr;
     std::vector<Credential*> credentials_;
@@ -573,6 +576,16 @@ class Provider final : public ICredentialProvider, public ICredentialProviderSet
 
         Log("Provider::Enumerate: %zu credential tiles created (%zu paired for phone unlock)",
             credentials_.size(), pairedSids_.size());
+#ifndef LOCKPIN_TESTING
+        try {
+            for(const auto& sid:pairedSids_) {
+                if(const auto cached=lockpin::phone::ReadSharedApplicationTime(sid)) {
+                    applicationTime_.clock.Apply(*cached,lockpin::phone::TimeTickMs());break;
+                }
+            }
+            applicationTime_.Start();
+        } catch (...) { Log("Application time startup unavailable; retaining the system-seeded internal clock"); }
+#endif
     }
 
     void StartBackgroundListener() {
@@ -854,9 +867,19 @@ class Provider final : public ICredentialProvider, public ICredentialProviderSet
                     }
                 };
 
-                const std::uint64_t timestampMs = static_cast<std::uint64_t>(
-                    std::chrono::duration_cast<std::chrono::milliseconds>(
-                        std::chrono::system_clock::now().time_since_epoch()).count());
+                lockpin::phone::FrameStreamReader timeFrameReader;
+                {
+                    if(const auto cached=lockpin::phone::ReadSharedApplicationTime(targetSid))
+                        applicationTime_.clock.Apply(*cached,lockpin::phone::TimeTickMs());
+                    std::vector<std::uint8_t> timeKey(std::begin(phoneRecord.kPair),std::end(phoneRecord.kPair));
+                    const auto cancelled=[&]{return !bgRunning_ || generation!=retryGeneration_.load();};
+                    const bool proceed=lockpin::phone::RunTimeHandshake(client,applicationTime_,timeKey,requestId,nonce,
+                        cancelled,[&](const wchar_t* text){SetStatusForSid(targetSid,text);},{},&timeFrameReader);
+                    SecureZeroMemory(timeKey.data(),timeKey.size());
+                    lockpin::phone::WriteSharedApplicationTime(targetSid,applicationTime_.clock.Snapshot(lockpin::phone::TimeTickMs()));
+                    if(!proceed) { WaitForRetry(generation);break; }
+                }
+                const std::uint64_t timestampMs = applicationTime_.clock.Snapshot(lockpin::phone::TimeTickMs()).utcMs;
                 const std::uint32_t ttlMs = 30000;
                 const auto challengeDeadlineTick = GetTickCount64() + ttlMs;
 
@@ -907,7 +930,7 @@ class Provider final : public ICredentialProvider, public ICredentialProviderSet
                 SetStatusForSid(targetSid, L"按一下指纹Living就让你进桌面( •̀ ω •́ )y~");
 
                 std::vector<std::uint8_t> wire;
-                if (!lockpin::phone::ReceiveFrameUntil(client, wire, challengeDeadlineTick)) {
+                if (!lockpin::phone::ReceiveUnlockFrameUntil(client, wire, challengeDeadlineTick,&timeFrameReader)) {
                     Log("Background: ReceiveFrame timed out or failed");
                     SetStatusForSid(targetSid, GetTickCount64() >= challengeDeadlineTick
                         ? L"请求超时了，再给Living我发一遍"
@@ -1102,6 +1125,7 @@ public:
         Log("Provider destructing");
         StopInteractionGate();
         StopBackgroundListener();
+        applicationTime_.Stop();
         Clear();
         if (users_) users_->Release();
         if (backgroundWake_) CloseHandle(backgroundWake_);

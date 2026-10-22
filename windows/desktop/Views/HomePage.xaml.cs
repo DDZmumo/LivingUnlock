@@ -12,10 +12,15 @@ public sealed partial class HomePage : Page
     private UnlockState? _currentState;
     private bool _locationReady;
     private bool _locationBusy;
+    private readonly DispatcherTimer _clockTimer=new(){Interval=TimeSpan.FromSeconds(1)};
+    private bool _clockLoaded;
+    private string? _clockMessage;
+    private long _clockMessageUntil;
 
     public HomePage()
     {
         InitializeComponent();
+        _clockTimer.Tick+=(_,_)=>UpdateClock();
         LocationToggle.IsOn = BootLocationService.Enabled;
         _locationReady = true;
     }
@@ -103,11 +108,39 @@ public sealed partial class HomePage : Page
 
     private void OnPageLoaded(object sender, RoutedEventArgs e)
     {
+        _clockLoaded=true;
+        ApplicationTimeService.Changed+=OnClockChanged;
+        UpdateClock();_clockTimer.Start();
         PageLayout.FitContent(PageScrollViewer, ContentHost, PageContent, 1120);
         Motion.Enter(HeroPanel, 0, 16);
         Motion.Enter(AccountPanel, 55, 16);
         Motion.Enter(UnlockModesCard, 105, 16);
         Motion.Enter(ManagementCard, 155, 16);
+    }
+
+    private void OnPageUnloaded(object sender,RoutedEventArgs e)
+    {
+        _clockLoaded=false;_clockTimer.Stop();ApplicationTimeService.Changed-=OnClockChanged;
+    }
+    private void OnClockChanged()=>DispatcherQueue.TryEnqueue(UpdateClock);
+    private void UpdateClock()
+    {
+        if(!_clockLoaded)return;
+        var sample=ApplicationTimeService.Snapshot();
+        var local=DateTimeOffset.FromUnixTimeMilliseconds(sample.UtcMs).ToLocalTime();
+        ClockTimeText.Text=local.ToString("HH:mm:ss");ClockDateText.Text=local.ToString("yyyy-MM-dd");
+        bool busy=ApplicationTimeService.IsCalibrating;
+        CalibrateTimeButton.IsEnabled=!busy;CalibrateTimeButton.Content=busy?"正在校准…":"校准时间";
+        ClockStatusText.Text=busy?"正在获取有效授时响应":Environment.TickCount64<_clockMessageUntil?
+            _clockMessage:ApplicationTimeService.SourceLabel(sample);
+        ClockTimeText.FontSize=HeroPanel.ActualWidth<780?22:30;
+    }
+    private async void OnCalibrateTimeClicked(object sender,RoutedEventArgs e)
+    {
+        CalibrateTimeButton.IsEnabled=false;CalibrateTimeButton.Content="正在校准…";
+        bool success=await ApplicationTimeService.CalibrateAsync();
+        _clockMessage=success?"内部时间已校准":"取时失败，沿用内部时钟";
+        _clockMessageUntil=Environment.TickCount64+5000;UpdateClock();
     }
 
     private void OnScrollViewportSizeChanged(object sender, SizeChangedEventArgs e)

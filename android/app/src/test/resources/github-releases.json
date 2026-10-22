@@ -1,0 +1,50 @@
+[
+  {
+    "tag_name": "v0.4.0", "draft": true, "prerelease": false,
+    "html_url": "https://github.com/DDZmumo/LivingUnlock/releases/tag/v0.4.0", "body": "Draft must be ignored",
+    "assets": [
+      { "name": "LivingUnlock-Setup-0.4.0-x64.exe", "state": "uploaded", "browser_download_url": "https://github.com/DDZmumo/LivingUnlock/releases/download/v0.4.0/LivingUnlock-Setup-0.4.0-x64.exe" },
+      { "name": "LivingUnlock-Android-0.4.0-compact.apk", "state": "uploaded", "browser_download_url": "https://github.com/DDZmumo/LivingUnlock/releases/download/v0.4.0/LivingUnlock-Android-0.4.0-compact.apk" }
+    ]
+  },
+  {
+    "tag_name": "v0.3.0", "draft": false, "prerelease": false,
+    "html_url": "https://github.com/DDZmumo/LivingUnlock/releases/tag/v0.3.0", "body": "Windows only",
+    "assets": [
+      { "name": "LivingUnlock-Setup-0.3.0-x64.exe", "state": "uploaded", "browser_download_url": "https://github.com/DDZmumo/LivingUnlock/releases/download/v0.3.0/LivingUnlock-Setup-0.3.0-x64.exe" },
+      { "name": "app-debug.apk", "state": "uploaded", "browser_download_url": "https://github.com/DDZmumo/LivingUnlock/releases/download/v0.3.0/app-debug.apk" }
+    ]
+  },
+  {
+    "tag_name": "v0.2.9", "draft": false, "prerelease": false,
+    "html_url": "https://github.com/DDZmumo/LivingUnlock/releases/tag/v0.2.9", "body": "Stable",
+    "assets": [
+      { "name": "LivingUnlock-Setup-0.2.9-x64.exe", "state": "uploaded", "browser_download_url": "https://github.com/DDZmumo/LivingUnlock/releases/download/v0.2.9/LivingUnlock-Setup-0.2.9-x64.exe" },
+      { "name": "LivingUnlock-Android-0.2.9-compact.apk", "state": "uploaded", "browser_download_url": "https://github.com/DDZmumo/LivingUnlock/releases/download/v0.2.9/LivingUnlock-Android-0.2.9-compact.apk" }
+    ]
+  },
+  {
+    "tag_name": "v0.2.10", "draft": false, "prerelease": true,
+    "html_url": "https://github.com/DDZmumo/LivingUnlock/releases/tag/v0.2.10", "body": "Preview",
+    "assets": [
+      { "name": "LivingUnlock-Setup-0.2.10-x64.exe", "state": "uploaded", "browser_download_url": "https://github.com/DDZmumo/LivingUnlock/releases/download/v0.2.10/LivingUnlock-Setup-0.2.10-x64.exe" },
+      { "name": "LivingUnlock-Android-0.2.10-compact.apk", "state": "uploaded", "browser_download_url": "https://github.com/DDZmumo/LivingUnlock/releases/download/v0.2.10/LivingUnlock-Android-0.2.10-compact.apk" }
+    ]
+  },
+  {
+    "tag_name": "v0.9.0", "draft": false, "prerelease": false,
+    "html_url": "https://github.com/DDZmumo/LivingUnlock/releases/tag/v0.9.0", "body": "Untrusted link",
+    "assets": [
+      { "name": "LivingUnlock-Setup-0.9.0-x64.exe", "state": "uploaded", "browser_download_url": "https://example.invalid/LivingUnlock-Setup-0.9.0-x64.exe" },
+      { "name": "LivingUnlock-Android-0.9.0-compact.apk", "state": "uploaded", "browser_download_url": "https://example.invalid/LivingUnlock-Android-0.9.0-compact.apk" }
+    ]
+  },
+  {
+    "tag_name": "v0.8.0", "draft": false, "prerelease": false,
+    "html_url": "https://github.com/DDZmumo/LivingUnlock/releases/tag/v0.8.0", "body": "Upload incomplete",
+    "assets": [
+      { "name": "LivingUnlock-Setup-0.8.0-x64.exe", "state": "starter", "browser_download_url": "https://github.com/DDZmumo/LivingUnlock/releases/download/v0.8.0/LivingUnlock-Setup-0.8.0-x64.exe" },
+      { "name": "LivingUnlock-Android-0.8.0-compact.apk", "state": "starter", "browser_download_url": "https://github.com/DDZmumo/LivingUnlock/releases/download/v0.8.0/LivingUnlock-Android-0.8.0-compact.apk" }
+    ]
+  }
+]

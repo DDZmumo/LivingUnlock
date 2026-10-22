@@ -274,25 +274,34 @@ class BluetoothUnlockService : Service() {
         var connection: com.windowslockpin.companion.core.transport.TransportConnection? = null
         var ownedSession: ActiveUnlockSession? = null
         var expiryJob: Job? = null
+        var timeHandshake: com.windowslockpin.companion.time.TimeHandshake? = null
         try {
             SafeLogger.d(TAG, "Attempting connection to '${record.pcName}' (${record.bluetoothMac})...")
             connection = incoming ?: withTimeout(CONNECT_TIMEOUT_MS) {
                 client.connect(record.bluetoothMac)
             }
             SafeLogger.i(TAG, "Connected to '${record.pcName}'; awaiting one unlock request")
+            timeHandshake=com.windowslockpin.companion.time.TimeHandshake(record,connection)
 
             // Read optional metadata, then handle one challenge within the connection window.
             while (currentCoroutineContext().isActive && isListening && connection.isConnected) {
 
                 // Blocking read — returns only when a frame arrives or the socket closes.
-                val frame = withTimeout(FIRST_FRAME_TIMEOUT_MS) { connection.receiveFrame() }
+                val frame = withTimeout(if(timeHandshake.isPreparing)15_000L else FIRST_FRAME_TIMEOUT_MS) { connection.receiveFrame() }
 
                 when (frame.header.messageType) {
                     ProtocolConstants.MSG_PONG -> {
+                        if(timeHandshake.handle(this,frame)) {
+                            if(timeHandshake.isPreparing && !UnlockSessionManager.isAppInForeground)
+                                showTimePreparationNotification(record,frame.header.requestId)
+                            continue
+                        }
                         try { DeviceDetailsStore(this).accept(record,frame.payload) }
                         catch(_:Exception) { SafeLogger.w(TAG,"Ignoring invalid optional device metadata") }
                     }
                     ProtocolConstants.MSG_UNLOCK_CHALLENGE -> {
+                        timeHandshake.close()
+                        val receivedElapsedMs = android.os.SystemClock.elapsedRealtime()
                         val challenge = ProtocolMessage.decode(frame) as UnlockChallenge
                         SafeLogger.i(TAG, "Received challenge from '${record.pcName}', validating...")
 
@@ -316,7 +325,8 @@ class BluetoothUnlockService : Service() {
                             requestId = frame.header.requestId,
                             challenge = challenge,
                             connection = connection,
-                            transcript = transcript
+                            transcript = transcript,
+                            receivedElapsedMs = receivedElapsedMs
                         )
 
                         val registered = UnlockSessionManager.registerSession(session)
@@ -399,6 +409,8 @@ class BluetoothUnlockService : Service() {
             SafeLogger.w(TAG, "Error in listenForPcChallenge: ${e.message}")
             try { connection?.close() } catch (_: Exception) {}
         } finally {
+            timeHandshake?.close()
+            dismissHeadsUpNotification()
             expiryJob?.cancel()
             withContext(NonCancellable) {
                 ownedSession?.let { session ->
@@ -410,6 +422,25 @@ class BluetoothUnlockService : Service() {
             }
             try { connection?.close() } catch (_: Exception) {}
         }
+    }
+
+    private fun showTimePreparationNotification(record: PairedPcRecord,requestId: RequestId) {
+        val intent=Intent(this,MainActivity::class.java).apply {
+            action=ACTION_OPEN_UNLOCK_REQUEST
+            flags=Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_NEW_TASK
+            putExtra(EXTRA_REQUEST_ID,requestId.value)
+        }
+        val content=PendingIntent.getActivity(this,REQUEST_CODE_CONTENT,intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        val notification=NotificationCompat.Builder(this,CHANNEL_UNLOCK_HEADS_UP)
+            .setSmallIcon(R.drawable.ic_notification_small).setColor(getColor(R.color.primary))
+            .setContentTitle("${DeviceDetailsStore(this).displayName(record)} 请求解锁")
+            .setContentText("正在核对内部时间，完成后可验证指纹")
+            .setPriority(NotificationCompat.PRIORITY_HIGH).setCategory(NotificationCompat.CATEGORY_MESSAGE)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC).setContentIntent(content)
+            .setFullScreenIntent(content,true).setAutoCancel(true).setOnlyAlertOnce(true).build()
+        try { NotificationManagerCompat.from(this).notify(NOTIFICATION_ID_CHALLENGE,notification) }
+        catch (_: SecurityException) {}
     }
 
     private fun showHeadsUpNotification(record: PairedPcRecord, challenge: UnlockChallenge, requestId: RequestId) {
@@ -635,6 +666,6 @@ class BluetoothUnlockService : Service() {
 
         private const val CONNECT_TIMEOUT_MS = 8_000L         // connect attempt timeout
         private const val FIRST_FRAME_TIMEOUT_MS = 5_000L
-        private const val CONNECTION_WINDOW_MS = 45_000L // connect + challenge TTL + result confirmation
+        private const val CONNECTION_WINDOW_MS = 90_000L // connect + bounded time preparation + challenge TTL + result
     }
 }

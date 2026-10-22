@@ -44,7 +44,9 @@ public partial class App : Application
             Exit();
             return;
         }
+        Services.ApplicationTimeService.Start();
         _window = new MainWindow();
+        _window.Closed += (_, _) => Services.ApplicationTimeService.Stop();
         _window.Activate();
     }
 }

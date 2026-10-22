@@ -87,6 +87,7 @@
                     </StackPanel>
 
                     <StackPanel Grid.Row="4" Spacing="12" Margin="8,0,8,4">
+                        <Button Content="检查更新" HorizontalAlignment="Stretch" Style="{StaticResource GhostButtonStyle}" Click="OnCheckUpdatesClicked" />
                         <Border Background="#272E353B" BorderBrush="#364B5965" BorderThickness="1" CornerRadius="8" Padding="12,10">
                             <Grid ColumnSpacing="10">
                                 <Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>

@@ -37,7 +37,6 @@ object ProtocolConstants {
     const val UNLOCK_RESULT_STATUS_REJECTED = 1
     const val UNLOCK_RESULT_STATUS_ERROR = 2
 
-    const val MAX_CLOCK_SKEW_MS: Long = 60_000L // 60 seconds
     const val MAX_QR_EXPIRY_WINDOW_SEC: Long = 180L // Max acceptable QR code validity
     const val CANONICAL_TRANSCRIPT_PREFIX: String = "WSLP-V1-UNLOCK-TRANSCRIPT\u0000"
 }

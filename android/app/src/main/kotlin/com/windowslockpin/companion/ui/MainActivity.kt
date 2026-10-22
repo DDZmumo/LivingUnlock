@@ -161,6 +161,7 @@ class MainActivity : AppCompatActivity() {
         setContent {
             LivingUnlockTheme {
                 val activeSession by UnlockSessionManager.activeSession.collectAsStateWithLifecycle()
+                val timePreparation by com.windowslockpin.companion.time.AppTime.preparation.collectAsStateWithLifecycle()
                 DisposableEffect(activeSession?.requestId) {
                     onDispose { biometricAuthManager.cancelAuthentication() }
                 }
@@ -182,12 +183,12 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 AnimatedContent(
-                    targetState = activeSession,
+                    targetState = Pair(activeSession,timePreparation),
                     transitionSpec = {
                         fadeIn(animationSpec = tween(280)) togetherWith fadeOut(animationSpec = tween(280))
                     },
                     label = "screen_transition"
-                ) { session ->
+                ) { (session,preparation) ->
                     if (session != null && !session.isExpired) {
                         UnlockRequestScreen(
                             session = session,
@@ -202,6 +203,10 @@ class MainActivity : AppCompatActivity() {
                                 }
                             }
                         )
+                    } else if(preparation!=null) {
+                        com.windowslockpin.companion.ui.screens.TimePreparationScreen(preparation) {
+                            lifecycleScope.launch { com.windowslockpin.companion.time.AppTime.cancelPreparation(preparation.requestId) }
+                        }
                     } else if(eggPayload!=null) {
                         EggScreen(eggPayload!!){eggPayload=null}
                     } else if (showSettings) {

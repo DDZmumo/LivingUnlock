@@ -211,10 +211,9 @@ class CompanionStateMachine(
             ?: return ProtocolResult.Failure(ProtocolErrorCode.DEVICE_MISMATCH, "Received challenge from unknown PC")
 
         val nowMs = timeProvider()
-        if (challenge.isExpired(nowMs)) {
-            SafeLogger.w(TAG, "Unlock challenge expired or clock skew exceeded")
-            return ProtocolResult.Failure(ProtocolErrorCode.EXPIRED, "Challenge is expired")
-        }
+        // The PC's epoch timestamp is an opaque part of the signed transcript,
+        // not a timestamp in the phone's clock domain. Windows rejects responses
+        // past its own monotonic deadline; the app uses a receipt-based TTL.
 
         val isFresh = replayCache.checkAndAdd(challenge.challengeNonce, nowMs)
         if (!isFresh) {

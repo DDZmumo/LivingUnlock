@@ -189,14 +189,6 @@ data class UnlockChallenge(
         }
     }
 
-    fun isExpired(currentEpochMs: Long): Boolean {
-        // Check both skew and TTL
-        if (Math.abs(currentEpochMs - timestampMs) > ProtocolConstants.MAX_CLOCK_SKEW_MS) {
-            return true
-        }
-        return currentEpochMs > (timestampMs + ttlMs)
-    }
-
     override fun encodePayload(): ByteArray {
         val baos = ByteArrayOutputStream()
         val dos = DataOutputStream(baos)

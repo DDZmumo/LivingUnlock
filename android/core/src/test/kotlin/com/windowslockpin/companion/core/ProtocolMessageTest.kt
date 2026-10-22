@@ -43,7 +43,7 @@ class ProtocolMessageTest {
     }
 
     @Test
-    fun testUnlockChallengeRoundtripAndExpiry() {
+    fun testUnlockChallengeRoundtrip() {
         val pcId = PcId.fromString("abcdef0123456789abcdef0123456789")
         val nonce = ChallengeNonce(ByteArray(32) { (it * 3).toByte() })
         val now = 1700000000000L
@@ -61,10 +61,6 @@ class ProtocolMessageTest {
         assertEquals(ttl, decodedCh.ttlMs)
         assertEquals("Alice", decodedCh.userDisplayName)
 
-        // Freshness / expiry tests
-        assertFalse(decodedCh.isExpired(now + 10000)) // inside TTL
-        assertTrue(decodedCh.isExpired(now + 31000)) // past TTL
-        assertTrue(decodedCh.isExpired(now - 70000)) // outside clock skew
     }
 
     @Test
